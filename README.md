@@ -1,17 +1,17 @@
-log-consolidate - Consolidate logs from multiple sources and multiple systems
+Log-consolidate - Consolidate logs from multiple sources and multiple systems.
 =============================================================================
 
 This program, depending on options, acts as either the reader for multiple log
-files or as a writer that takes consolidated log files and writes them out to
+files, or as a writer that takes consolidated log files and writes them out to
 a single file on a single system.  It uses Redis lists to accomplish this.
 
-Also it can search the logs for patterns and notify when a patter is found.
+Also it can search the logs for patterns and notify when a pattern is found.
 
 The basic idea is to send log files to named pipes (fifo) on each system
 and have the reader end pick up the data and send it to Redis on a List.
 The other end takes the data from Redis and writes it to a file.
 
-To create a named pipe on a Mac (OS X) and Linux
+To create a named pipe on a Mac (OS X) and Linux:
 
 	$ mkfifo <name>
 
@@ -22,7 +22,7 @@ it.
 [Linux Journal](http://www.linuxjournal.com/article/2156) provides a 
 nice explanation of named pipes.
 
-Windows - no joy
+Windows - No Joy
 ----------------
 
 Windows has named pipes that would require substantially different code to work.  
@@ -34,7 +34,7 @@ Sample Configuration
 --------------------
 
 This is a sample read configuration for a single machine running a server and 3 micro services.
-Two machines are involved 192.168.0.20 where the server and 3 micro services are running.
+Two machines are involved, 192.168.0.20,`where the server and 3 micro services are running.
 The logs are consolidated on 192.168.0.157.
 
 The File r-cfg.json is:
@@ -44,6 +44,7 @@ The File r-cfg.json is:
 	 {
 		"RedisConnect": {
 			  "RedisHost":  "192.168.0.133"
+			, "RedisPort":  "6379"
 			, "RedisAuth":  "lLJSmKCCYJixETskr8RM2avJaBM"
 		}
 		, "Read": [
@@ -64,11 +65,11 @@ The name of the Redis list is `log:`.  This is set with the Default.Key value.
 
 `Read` lists the set of files that are to be read.
 
-`Write.Local` is the Redis connection information.   You can set the port that
+`RedisConnect` is the Redis connection information.   You can set the port that
 Redis runs on with `"RedisPort":"6379"`.  If Redis is not using authentication
 then leave `RedisAuth` our or set to `""`.
 
-`MaxMsg` sets the size limit on the Redis list to 500.  If the list exceeds this size then
+`MaxMsg` sets the size limit on the Redis list to 500.  If the list exceeds this size, then
 the data will be written to a backup log file.  The default backup file is: `./consolidate.log.file`.
 
 The writer configuration file is much simpler.
@@ -95,7 +96,7 @@ A pair of reader/writer is then run.  On the system with the server, and the mic
 	$ log-consolidate -c r-cfg.json read
 ```
 
-On the system where the flog files are to be consolidated, run
+On the system where the flog files are to be consolidated, run:
 
 ```
 	$ log-consolidate -c w-cfg.json write 
@@ -108,10 +109,10 @@ Setup across machines
 This is a more realistic configuration. It is taken with very little modification from the set of servers
 that I am running.  All of the systems need to be able to contact the same Redis instance.
 
-Two web serves are configured to use DNS in a round robin.  These are `ws-01` and `ws-02`.
+Two web servers are configured to use DNS in a round robin.  These are `ws-01` and `ws-02`.
 All of the configuration is stored in a single directory and identified by host name.
 
-Three machines run micro services these are `ms-01`, `ms-02` and `ms-03`.
+Three machines run micro services. These are `ms-01`, `ms-02` and `ms-03`.
 
 On ws-01 the configuration file is ws-01-cfg.json:
 
@@ -141,7 +142,7 @@ This is run with:
 ```
 
 
-On ws-02 the second web server the config is ws-02-cfg.json:
+On ws-02, the second web server, the config is ws-02-cfg.json:
 
 ```JavaScript
 
@@ -168,7 +169,7 @@ This is run with:
 	$ log-consolidate read
 ```
 
-On ms-01, ms-02, ms-03 servers are configured with:
+On ms-01, ms-02, ms-03, servers are configured with:
 
 ```JavaScript
 
