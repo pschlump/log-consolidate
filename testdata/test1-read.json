@@ -1,0 +1,16 @@
+{
+	"RedisConnect": {
+		  "RedisHost":  "192.168.0.133"
+		, "RedisAuth":  "lLJSmkccYJiVEwskr1RM4MWIaBM"
+	}
+	, "Read": [
+		  { "File":"testdata/pipe1" }
+		, { "File":"testdata/pipe2" }
+		, { "File":"testdata/pipe3" }
+	]
+	, "Default": {
+		  "Key": "log:"
+		, "MaxMsg": 50
+		, "Name":"test1-read-log-consolidate"
+	}
+}

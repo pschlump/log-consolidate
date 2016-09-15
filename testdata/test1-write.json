@@ -1,0 +1,11 @@
+{
+	"RedisConnect": {
+		  "RedisHost":  "192.168.0.133"
+		, "RedisAuth":  "lLJSmkccYJiVEwskr1RM4MWIaBM"
+	}
+	, "Default": {
+		  "Key": "log:"
+		, "Name":"test1-read-log-consolidate"
+		, "OutputFile":"testdata/test1.out.log"
+	}
+}
