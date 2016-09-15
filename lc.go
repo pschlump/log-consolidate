@@ -21,11 +21,10 @@ import (
 
 	"github.com/pschlump/Go-FTL/server/sizlib"
 	"github.com/pschlump/godebug"
+	"github.com/pschlump/log-consolidate/lib"
 	"github.com/pschlump/mon-alive/lib"
 	"github.com/pschlump/radix.v2/redis"
 	"github.com/urfave/cli"
-
-	"www.2c-why.com/log-consolidate/lib"
 )
 
 type MoveData struct {
