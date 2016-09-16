@@ -31,12 +31,12 @@ type DefaultType struct {
 }
 
 type ConfigType struct {
-	Read         []ReadType        // set of files to read
-	RedisConnect *RedisConnectType // destination to send data to
-	Default      DefaultType       // default key in Redis to send data to
-	IAmAlive     bool              // if true send periodic messages to monitor to say that this service is up and running
-	StatusPort   string            // host:port to listen to for request from the process monitor for /api/status and /api/test (IAmAlive must be true)
-	EFile        *os.File          `json:"-"`
+	Read         []ReadType       // set of files to read
+	RedisConnect RedisConnectType // destination to send data to
+	Default      DefaultType      // default key in Redis to send data to
+	IAmAlive     bool             // if true send periodic messages to monitor to say that this service is up and running
+	StatusPort   string           // host:port to listen to for request from the process monitor for /api/status and /api/test (IAmAlive must be true)
+	EFile        *os.File         `json:"-"`
 }
 
 // ReadConfig reads in the configuration file and replaces values with defaults if they were not specified.
@@ -50,28 +50,15 @@ func ReadConfig(cfgFn, HostName string) (cfg ConfigType) {
 		fmt.Fprintf(os.Stderr, "Fatal! Unable to read configuration file %s, error=%s\n", cfgFn, err)
 		os.Exit(1)
 	}
+	cfg.Default.MaxListSize = 50000
+	cfg.Default.BackupLocalFile = "./backup.log"
+	cfg.Default.Key = "log:"
+	cfg.RedisConnect.RedisHost = "127.0.0.1"
+	cfg.RedisConnect.RedisPort = "6379"
 	err = json.Unmarshal(s, &cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Fatal! Unable to unmarshal/parse configuration file %s, error=%s\n", cfgFn, err)
 		os.Exit(1)
-	}
-	// add in defaults for not-set values
-	if cfg.RedisConnect != nil {
-		if cfg.RedisConnect.RedisHost == "" {
-			cfg.RedisConnect.RedisHost = "127.0.0.1"
-		}
-		if cfg.RedisConnect.RedisPort == "" {
-			cfg.RedisConnect.RedisPort = "6379"
-		}
-	}
-	if cfg.Default.MaxListSize == 0 {
-		cfg.Default.MaxListSize = 50000
-	}
-	if cfg.Default.BackupLocalFile == "" {
-		cfg.Default.BackupLocalFile = "./backup.log"
-	}
-	if cfg.Default.Key == "" {
-		cfg.Default.Key = "log:"
 	}
 	return
 }

@@ -99,12 +99,10 @@ func main() {
 			fmt.Printf("Cfg = %s\n", godebug.SVarI(cfg))
 		}
 		ok = false
-		if cfg.RedisConnect != nil {
-			client, ok = LogConsolidateLib.RedisClient(cfg.RedisConnect.RedisHost, cfg.RedisConnect.RedisPort, cfg.RedisConnect.RedisAuth)
-			if !ok {
-				// Must run anyhow!
-				redisError = true
-			}
+		client, ok = LogConsolidateLib.RedisClient(cfg.RedisConnect.RedisHost, cfg.RedisConnect.RedisPort, cfg.RedisConnect.RedisAuth)
+		if !ok {
+			// Must run anyhow!
+			redisError = true
 		}
 		if cfg.IAmAlive {
 			// func NewMonIt(GetConn func() (conn *redis.Client), FreeConn func(conn *redis.Client)) (rv *MonIt) {
