@@ -1,0 +1,115 @@
+
+// -------------------------------------------------------------------------------------------------
+// See:  https://gobyexample.com/json
+// -------------------------------------------------------------------------------------------------
+func JsonStringToData(s string) (theJSON map[string]interface{}, err error) {
+	err = json.Unmarshal([]byte(s), &theJSON)
+	if err != nil {
+		theJSON = make(map[string]interface{})
+	}
+	return
+}
+
+var JSON_Prefix string = ""
+
+func SetJsonPrefix(p string) {
+	JSON_Prefix = p
+}
+
+// -------------------------------------------------------------------------------------------------
+// Take a string 's' and if a get parameter "callback" is specified then format this for JSONP.
+// -------------------------------------------------------------------------------------------------
+func JsonP(s string, res http.ResponseWriter, req *http.Request) string {
+	// fmt.Printf ( "JsonP passed ->%s<-\n", s )
+	u, _ := url.ParseRequestURI(req.RequestURI)
+	m, _ := url.ParseQuery(u.RawQuery)
+	callback := m.Get("callback")
+	if callback != "" {
+		res.Header().Set("Content-Type", "application/javascript") // For JSONP
+		return fmt.Sprintf("%s(%s);", callback, s)
+	} else {
+		return JSON_Prefix + s
+	}
+}
+
+//
+// Take parameters and convert all of them into a single 'm' data structure.
+// 1. Cookies
+// 2. Get Values
+// 3. Post Form Values
+//
+// The code is in a different order from the 1,2,3 above but will work in this
+// priority.
+//
+//func UriToStringMap ( req *http.Request ) ( m url.Values ) {
+//
+//	ct := req.Header.Get("Content-Type")
+//
+//	db_uriToString := false
+//
+//	if ( db_uriToString ) { fmt.Printf ( "PJS Apr 9: %s Content Type:%v\n", godebug.LF(), ct ) }
+//
+//	u, _ := url.ParseRequestURI(req.RequestURI)
+//	m, _ = url.ParseQuery(u.RawQuery)
+//
+//	// xyzzy - add in cookies??		req.Cookies() -> []string
+//	if ( db_uriToString ) { fmt.Printf ( "Cookies are: %s\n", SVar( req.Cookies() ) ) }
+//	Ck := req.Cookies()
+//	for _, v := range Ck {
+//		if _, ok := m[v.Name]; ! ok {
+//			m[v.Name] = make ( []string, 1 )
+//			m[v.Name][0] = v.Value
+//fmt.Printf ( "Name=%s Value=%s\n", v.Name, v.Value )
+//		}
+//	}
+//
+//fmt.Printf ( "Checking to see if post\n" )
+//
+//	// add in POST parmeters
+//	if req.Method == "POST" || req.Method == "PUT" {
+//fmt.Printf ( "It's a POST, req.PostForm=%v, ct=%s\n", req.PostForm, ct )
+//		if req.PostForm == nil {
+//			if ( db_uriToString ) { fmt.Printf ( "ParseForm has !!!not!!! been  called\n" ) }
+//			if strings.HasPrefix ( ct, "application/json" ) {
+//				body, err2 := ioutil.ReadAll(req.Body)
+//				if err2 != nil {
+//					fmt.Printf ( "err=%v\n", err2 )
+//				}
+//				if ( db_uriToString) { fmt.Printf("body=%s\n",string(body)) }
+//				fmt.Printf("request body=%s\n",string(body))
+//				var jsonData map[string]interface{}
+//				err := json.Unmarshal(body, &jsonData)
+//				if err == nil {
+//					for i, v := range jsonData {
+//						m[i] = make ( []string, 1 )
+//						m[i][0] = fmt.Sprintf ( "%v", v )
+//					}
+//				}
+//			} else {
+//				err := req.ParseForm()
+//				if ( db_uriToString ) { fmt.Printf ( "Form data is now: %s\n", SVar(req.PostForm) ) }
+//				if err != nil {
+//					fmt.Printf ( "Error - parse form just threw an error , why? %v\n", err )
+//				} else {
+//					for i, v := range req.PostForm {
+//						if len(v) > 0 {
+//							m[i] = make ( []string, 1 )
+//							m[i][0] = v[0]
+//						}
+//					}
+//				}
+//			}
+//		} else {
+//			for i, v := range req.PostForm {
+//				if len(v) > 0 {
+//					m[i] = make ( []string, 1 )
+//					m[i][0] = v[0]
+//				}
+//			}
+//		}
+//	}
+//
+//	if ( db_uriToString ) { fmt.Printf ( ">>m=%s\n", SVar(m) ) }
+//
+//	return
+//}

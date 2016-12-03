@@ -19,9 +19,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pschlump/Go-FTL/server/sizlib"
 	"github.com/pschlump/godebug"
 	"github.com/pschlump/log-consolidate/lib"
+	"github.com/pschlump/log-consolidate/lib2"
 	"github.com/pschlump/mon-alive/lib"
 	"github.com/pschlump/radix.v2/redis"
 	"github.com/urfave/cli"
@@ -77,7 +77,7 @@ func main() {
 		if Name != "" {
 			mdata := make(map[string]string)
 			mdata["hostname"] = HostName
-			t := sizlib.Qt(Name, mdata)
+			t := lib2.Qt(Name, mdata)
 			fmt.Printf("Application Name: %s\n", t)
 			app.Name = t
 		}
@@ -112,7 +112,7 @@ func main() {
 
 		for _, vv := range cfg.Read {
 			// TODO: if vv.FileToRead is a standard file then should rename it, and replace with FIFO
-			if !sizlib.Exists(vv.FileToRead) {
+			if !lib2.Exists(vv.FileToRead) {
 				fmt.Printf("Warning: creating missing fifo: %s\n", vv.FileToRead)
 				out, err := exec.Command(mkfifo, vv.FileToRead).Output()
 				if err != nil {
@@ -139,7 +139,7 @@ func main() {
 						fmt.Printf("Read From %s\n", rdr.FileToRead)
 					}
 					// do read in infinite loop
-					// fp, err := sizlib.Fopen(rdr.FileToRead, "r")
+					// fp, err := lib2.Fopen(rdr.FileToRead, "r")
 					fp, err := os.OpenFile(rdr.FileToRead, os.O_RDWR, os.ModeNamedPipe)
 					if err != nil {
 						fmt.Fprintf(os.Stderr, "Unable to open %s for input, error=%s\n", rdr.FileToRead, err)
@@ -230,7 +230,7 @@ func main() {
 				FileName = cfg.Default.OutputFile
 			}
 
-			fp, err := sizlib.Fopen(FileName, "a")
+			fp, err := lib2.Fopen(FileName, "a")
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Unable to open consolidated log file, %s, error=%s -- output send to stderr\n", FileName, err)
 				fp = os.Stderr
@@ -345,7 +345,7 @@ func main() {
 func EmergencyBackup(cfg *LogConsolidateLib.ConfigType, d0 string) {
 	if cfg.EFile == nil {
 		fn := cfg.Default.BackupLocalFile
-		fx, err := sizlib.Fopen(fn, "a")
+		fx, err := lib2.Fopen(fn, "a")
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Unable to open emergency file, %s, error=%s\n", fn, err)
 			return

@@ -1,0 +1,32 @@
+package main
+
+import (
+	"fmt"
+
+	"../go-lib/sizlib"
+)
+
+func main() {
+
+	opts__TopPath = "/Users/corwin/Projects/who-cares"
+
+	// func sizlib.FilterArray(re string, inArr []string) (outArr []string) {
+
+	// func sizlib.GetFilenames(dir string) (filenames, dirs []string) {
+
+	fList := FindFiles(opts__TopPath)
+
+	fmt.Printf("fList = %s\n", sizlib.SVar(fList))
+
+}
+
+func FindFiles(pth string) (rv []string) {
+	fns, dirs := sizlib.GetFilenames(pth)
+	fns = sizlib.FilterArray("^sql-cfg.*\\.json$", fns)
+	rv = append(rv, fns...)
+	for _, v := range dirs {
+		trv := FindFiles(pth + "/" + v)
+		rv = append(rv, fns...)
+	}
+	return
+}

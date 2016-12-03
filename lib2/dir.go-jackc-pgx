@@ -1,0 +1,2551 @@
+// (C) Copyright Philip Schlump, 2013-2014
+
+package sizlib
+
+// _ "github.com/mattn/go-oci8"			// OCI
+
+import (
+	// _ "../odbc" // _ "code.google.com/p/odbc"
+	// _ "github.com/lib/pq"
+	// _ "../pq" // _ "github.com/lib/pq"
+	// _ "github.com/mattn/go-oci8"			// OCI
+	// "database/sql"
+
+	"github.com/jackc/pgx" //  https://github.com/jackc/pgx
+
+	"database/sql"
+
+	"crypto/sha1"
+	"encoding/xml"
+	"errors"
+	"fmt"
+	"image"
+	"image/gif"
+	"image/jpeg"
+	"image/png"
+	"io"
+	"io/ioutil"
+	"log"
+	"net"
+	"net/http"
+	"net/url"
+	"os"
+	"os/user"
+	"path"
+	"path/filepath"
+	"regexp"
+	"runtime"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/pschlump/HashStr"
+	"github.com/pschlump/godebug"
+	"github.com/pschlump/json" //	"encoding/json"
+	"github.com/pschlump/tr"
+	"github.com/pschlump/uuid"
+	"www.2c-why.com/resize"
+)
+
+// "github.com/nu7hatch/gouuid"
+
+// UUID?? import "code.google.com/p/go-uuid/uuid"
+//			import "github.com/nu7hatch/gouuid"
+//			import "github.com/twinj/uuid"
+
+// "database/sql/driver"
+// "math/rand"
+// "bytes"
+
+const (
+	Version = "Version: 0.8.6"
+)
+
+const ISO8601 = "2006-01-02T15:04:05.99999Z07:00"
+const ISO8601output = "2006-01-02T15:04:05.99999-0700"
+
+// -------------------------------------------------------------------------------------------------
+// -------------------------------------------------------------------------------------------------
+func SVar(v interface{}) string {
+	s, err := json.Marshal(v)
+	// s, err := json.MarshalIndent ( v, "", "\t" )
+	if err != nil {
+		return fmt.Sprintf("Error:%s", err)
+	} else {
+		return string(s)
+	}
+}
+
+// -------------------------------------------------------------------------------------------------
+func SVarI(v interface{}) string {
+	// s, err := json.Marshal ( v )
+	s, err := json.MarshalIndent(v, "", "\t")
+	if err != nil {
+		return fmt.Sprintf("Error:%s", err)
+	} else {
+		return string(s)
+	}
+}
+
+// -------------------------------------------------------------------------------------------------
+func XVar(v interface{}) string {
+	s, err := xml.Marshal(v)
+	// s, err := json.MarshalIndent ( v, "", "\t" )
+	if err != nil {
+		return fmt.Sprintf("Error:%s", err)
+	} else {
+		return string(s)
+	}
+}
+
+// -------------------------------------------------------------------------------------------------
+func XVarI(v interface{}) string {
+	// s, err := json.Marshal ( v )
+	s, err := xml.MarshalIndent(v, "", "\t")
+	if err != nil {
+		return fmt.Sprintf("Error:%s", err)
+	} else {
+		return string(s)
+	}
+}
+
+// -------------------------------------------------------------------------------------------------
+// xyzzy-test
+// -------------------------------------------------------------------------------------------------
+// Sets mdata["full"] to 'fn'
+// Sets mdata["width"] to width
+// Sets mdata["height"] to height
+// Sets mdata["b_fn"] = mdata["v2"]
+// if read_orig - then 'img' is read in from the file system.
+func GetImageSizeReadImage(db *pgx.Conn, fn string, img image.Image, mdata map[string]string) (read_orig bool, w int, h int) {
+
+	read_orig = false
+
+	w, h, err := GetImageSize(db, fn, mdata) // should pull size info from d.b. on file
+
+	if err != nil {
+		img, _ = GetImg(fn)
+		read_orig = true
+
+		w, h = GetSizeOfImage(img)
+		SaveUpdateImageSize(db, fn, mdata, w, h)
+	}
+	return
+}
+
+// -------------------------------------------------------------------------------------------------
+// Read in an image and return the size of the image.
+// Problem - image is discarded.
+func GetImageFromFile(fn string) (w int, h int) {
+	img, _ := GetImg(fn)
+	w, h = GetSizeOfImage(img)
+	return
+}
+
+// -------------------------------------------------------------------------------------------------
+// xyzzy-test - imlement a command line program and "makefile" test for this.
+// xyzzy - check for removal of side effect - or push side effect up to top level - much clearer
+// Xyzzy - change internals - replace use of "mdata["full"]" with $1 - clean up code.
+// Xyzzy - implement a "Select1Row ( db, Qry, ... )" that returns an interface{},err
+// -------------------------------------------------------------------------------------------------
+// Query the database to get the size of an image.   Use the full file name.
+// Return width, height if found.
+// Sets mdata["full"] to 'fn'
+// -------------------------------------------------------------------------------------------------
+func GetImageSize(db *pgx.Conn, full string, mdata map[string]string) (big_w int, big_h int, err error) {
+	err = nil
+	big_w = 0
+	big_h = 0
+
+	mdata["full"] = full // xyzzy - side effect - see if we can remove this!
+	if true {
+		data := SelData(db, "select \"height\", \"width\", \"file_name\" from \"img_file\" where \"file_name\" = $1", full)
+		if len(data) != 1 {
+			err = sql.ErrNoRows
+		} else {
+			big_h = int(data[0]["height"].(int64))
+			big_w = int(data[0]["width"].(int64))
+		}
+	} else {
+		q := Qt("select \"height\", \"width\", \"file_name\" from \"img_file\" where \"file_name\" = '%{full%}'", mdata)
+
+		// fmt.Printf ( "****important**** getImageSize: q=->%s<-\n", q )
+		Rows, e0 := db.Query(q)
+		if e0 != nil {
+			err = e0
+			fmt.Printf("Error (230) on talking to database, %s\n", err)
+			return
+		} else {
+			defer Rows.Close()
+		}
+
+		var x_fn string
+		n_row := 0
+		for Rows.Next() {
+			n_row++
+			err = Rows.Scan(&big_h, &big_w, &x_fn)
+			if err != nil {
+				fmt.Printf("Error (241) on retreiving row from database, %s\n", err)
+				return
+			}
+		}
+		err = nil
+		if n_row != 1 {
+			fmt.Printf("Error (246) too many rows returned, n_rows=%d\n", n_row)
+			err = sql.ErrNoRows // Xyzzy log it
+		}
+		// fmt.Printf ( "****important**** Success - got size from d.b.\n" )
+	}
+	return
+}
+
+func extractConfig(auth string) pgx.ConnConfig {
+	var config pgx.ConnConfig
+	config.Host = "localhost"
+	config.Database = "test"
+	json.Unmarshal([]byte(auth), &config)
+
+	/*
+		config.Host = os.Getenv("TODO_DB_HOST")
+		if config.Host == "" {
+			config.Host = "localhost"
+		}
+
+		config.User = os.Getenv("TODO_DB_USER")
+		if config.User == "" {
+			config.User = os.Getenv("USER")
+		}
+
+		config.Password = os.Getenv("TODO_DB_PASSWORD")
+
+		config.Database = os.Getenv("TODO_DB_DATABASE")
+		if config.Database == "" {
+			config.Database = "todo"
+		}
+	*/
+
+	return config
+}
+
+// -------------------------------------------------------------------------------------------------
+// SET SCHEMA 'database_name'; -- Postgres way to set sechema to ...
+// -------------------------------------------------------------------------------------------------
+func ConnectToDb(auth string) *pgx.Conn {
+	/*
+		//db, err := sql.Open("odbc", "DSN=T1; UID=sa; PWD=f1ref0x12" )	// ODBC to Microsoft SQL Server
+		//db, err := sql.Open("mymysql", "test/philip/f1ref0x12")		// mySQL
+		// db, err := sql.Open("oci8", "scott/tiger@//192.168.0.101:1521/orcl")
+		db, err := sql.Open("postgres", auth)
+		if err != nil {
+			panic(err)
+		}
+		db.SetMaxIdleConns(5)
+	*/
+	conn, err := pgx.Connect(extractConfig(auth))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Unable to connection to database: %v\n", err)
+		os.Exit(1)
+	}
+	return conn
+}
+
+type MyDb struct {
+	Db     *pgx.Conn
+	DbType string
+}
+
+var DbBeginQuote = `"`
+var DbEndQuote = `"`
+
+func ConnectToAnyDb(db_type string, auth string, dbName string) *MyDb {
+	mm := &MyDb{DbType: db_type}
+
+	switch db_type {
+	case "postgres":
+		DbBeginQuote = `"`
+		DbEndQuote = `"`
+	case "oracle":
+		os.Setenv("NLS_LANG", "")
+		DbBeginQuote = `"`
+		DbEndQuote = `"`
+		db_type = "oci8"
+	case "odbc":
+		DbBeginQuote = `[`
+		DbEndQuote = `]`
+	default:
+		panic("Invalid database type.")
+	}
+
+	// db, err := sql.Open(db_type, auth)
+
+	//db, err := sql.Open("odbc", "DSN=T1; UID=sa; PWD=f1ref0x12" )	// ODBC to Microsoft SQL Server
+	//db, err := sql.Open("mymysql", "test/philip/f1ref0x12")		// mySQL
+	//db, err := sql.Open("oci8", "scott/tiger@//192.168.0.101:1521/orcl")
+
+	//if err != nil {
+	//	panic(err)
+	//}
+
+	db := ConnectToDb(auth)
+	mm.Db = db
+
+	switch db_type {
+	case "postgres":
+		// db.SetMaxIdleConns(5)
+		// SET SCHEMA 'database_name'; -- Postgres way to set sechema to ...
+
+	case "oci8":
+		// set a default schema?? - or just use schema connected to?
+		// No activity for now.
+
+	case "odbc":
+		err := Run1(db, "use "+dbName)
+		if err != nil {
+			fmt.Printf("Unable to set database, to %s, %s\n", dbName, err)
+		}
+	}
+
+	return mm
+}
+
+// -------------------------------------------------------------------------------------------------
+// xyzzy-test
+// xyzzy-refactor to use a more standard query interface
+// xyzzy- change interface to return H/W in call
+// xyzzy- get rid of side effect mdata["width"] and pass in file name, v2
+// -------------------------------------------------------------------------------------------------
+// Depends on mdata["v2"] being set to base file name
+func NextBiggerAvailable(db *pgx.Conn, full string, need_w int, need_h int, mdata map[string]string) (is_avail bool, use_fn string) {
+	is_avail = false
+	use_fn = full
+	var q string
+	mdata["width"] = fmt.Sprintf("%d", need_w)
+	mdata["height"] = fmt.Sprintf("%d", need_h)
+	if true {
+		var data []map[string]interface{}
+		var base_file_name = mdata["v2"]
+		if need_w > 0 && need_h > 0 {
+			data = SelData(db, "select \"height\", \"width\", \"file_name\" from \"img_file\" where \"base_file_name\" = $1 and \"width\" >= $2 and \"height\" >= $3 order by 2 asc limit 1", base_file_name, need_w, need_h)
+		} else if need_w == 0 {
+			data = SelData(db, "select \"height\", \"width\", \"file_name\" from \"img_file\" where \"base_file_name\" = $1 and \"height\" >= $2 order by 2 asc limit 1", base_file_name, need_h)
+		} else if need_h == 0 {
+			data = SelData(db, "select \"height\", \"width\", \"file_name\" from \"img_file\" where \"base_file_name\" = $1 and \"width\" >= $2 order by 2 asc limit 1", base_file_name, need_w)
+		} // else {
+		// 	return
+		// }
+		if len(data) == 1 {
+			use_fn = data[0]["file_name"].(string)
+			is_avail = true
+		}
+	} else {
+
+		if need_w > 0 && need_h > 0 {
+			q = Qt("select \"height\", \"width\", \"file_name\" from \"img_file\" where \"base_file_name\" = '%{v2%}' and \"width\" >= %{width%} and \"height\" >= %{height%} order by 2 asc limit 1", mdata)
+		} else if need_w == 0 {
+			q = Qt("select \"height\", \"width\", \"file_name\" from \"img_file\" where \"base_file_name\" = '%{v2%}' and \"height\" >= %{height%} order by 2 asc limit 1", mdata)
+		} else if need_h == 0 {
+			q = Qt("select \"height\", \"width\", \"file_name\" from \"img_file\" where \"base_file_name\" = '%{v2%}' and \"width\" >= %{width%} order by 2 asc limit 1", mdata)
+		} else {
+			return
+		}
+		// fmt.Printf ( "q=->%s<-\n", q )
+		// tr.TraceDb("NextBiggerAvailable", q)
+
+		Rows, err := db.Query(q)
+		if err != nil {
+			fmt.Printf("error on talking to database, %s\n", err)
+			return
+		} else {
+			defer Rows.Close()
+		}
+
+		var x_h int
+		var x_w int
+		var x_fn string
+		n_row := 0
+		for Rows.Next() {
+			n_row++
+			err = Rows.Scan(&x_h, &x_w, &x_fn)
+			if err != nil {
+				fmt.Printf("Error (111) on retreiving row from database, %s\n", err)
+				return
+			}
+			// tr.TraceDbData("NextBiggerAvailable", q, x_h, x_w, x_fn)
+		}
+		// tr.TraceDbEnd("NextBiggerAvailable", q, n_row)
+		if n_row != 1 {
+			fmt.Printf("Error (116) too many rows returned, n_rows=%d\n", n_row)
+			is_avail = false
+		} else {
+			use_fn = x_fn
+			is_avail = true
+		}
+		// fmt.Printf ( "NextBiggerAvailable: use_fn=->%s<- is_avail=%v\n", use_fn, is_avail )
+	}
+	return
+}
+
+// -------------------------------------------------------------------------------------------------
+// built_it_already, nb_fn, _, _ := exactMatch ( full, w, 0, mdata )
+// xyzzy-test
+// xyzzy-refactor to use a more standard query interface
+// -------------------------------------------------------------------------------------------------
+// Depends on mdata["v2"] being the basename.
+// -------------------------------------------------------------------------------------------------
+func ExactMatch(db *pgx.Conn, full string, need_w int, need_h int, mdata map[string]string) (is_avail bool, use_fn string, x_w int, x_h int) {
+	is_avail = false
+	use_fn = full
+	var q string
+	mdata["width"] = fmt.Sprintf("%d", need_w)
+	mdata["height"] = fmt.Sprintf("%d", need_h)
+	// mdata["likebfn"] = "%/" +  mdata["v2"] + ".%"
+	if true {
+		var data []map[string]interface{}
+		var base_file_name = mdata["v2"]
+		if need_w > 0 && need_h > 0 {
+			data = SelData(db, "select \"height\", \"width\", \"file_name\" from \"img_file\" where \"base_file_name\" = $1 and \"width\" = $2 and \"height\" = $3 order by 2 asc limit 1", base_file_name, need_w, need_h)
+		} else if need_w == 0 {
+			data = SelData(db, "select \"height\", \"width\", \"file_name\" from \"img_file\" where \"base_file_name\" = $1 and \"height\" = $2 order by 2 asc limit 1", base_file_name, need_h)
+		} else if need_h == 0 {
+			data = SelData(db, "select \"height\", \"width\", \"file_name\" from \"img_file\" where \"base_file_name\" = $1 and \"width\" = $2 order by 2 asc limit 1", base_file_name, need_w)
+		} // else {
+		// 	return
+		// }
+		if len(data) == 1 {
+			use_fn = data[0]["file_name"].(string)
+			x_w = int(data[0]["width"].(int64))
+			x_h = int(data[0]["height"].(int64))
+			is_avail = true
+		}
+	} else {
+
+		if need_w > 0 && need_h > 0 {
+			q = Qt("select \"height\", \"width\", \"file_name\" from \"img_file\" where \"width\" = %{width%} and \"height\" = %{height%} and \"base_file_name\" = '%{v2%}' order by 2 asc limit 1", mdata)
+		} else if need_w == 0 {
+			q = Qt("select \"height\", \"width\", \"file_name\" from \"img_file\" where \"height\" = %{height%} and \"base_file_name\" = '%{v2%}' order by 2 asc limit 1", mdata)
+		} else if need_h == 0 {
+			q = Qt("select \"height\", \"width\", \"file_name\" from \"img_file\" where \"width\" = %{width%} and \"base_file_name\" = '%{v2%}' order by 2 asc limit 1", mdata)
+		} else {
+			return
+		}
+		// fmt.Printf ( "exactMatch: q=->%s<-\n", q )
+
+		Rows, err := db.Query(q)
+		if err != nil {
+			fmt.Printf("Error (150) on talking to database, %s\n", err)
+			return
+		} else {
+			defer Rows.Close()
+		}
+
+		var x_fn string
+		n_row := 0
+		for Rows.Next() {
+			//  fmt.Printf ("Inside Rows Next\n" );
+			n_row++
+			err = Rows.Scan(&x_h, &x_w, &x_fn)
+			if err != nil {
+				fmt.Printf("Error (162) on retreiving row from database, %s\n", err)
+				return
+			}
+		}
+		if n_row == 0 {
+			fmt.Printf("Error (166) NO rows returned, query=%s\n", q)
+			use_fn = ""
+			is_avail = false
+			return
+		}
+		if n_row != 1 {
+			fmt.Printf("Error (167) too many rows returned, n_rows=%d\n", n_row)
+		}
+
+		use_fn = x_fn
+		// fmt.Printf ( "      use_fn=->%s<- with size %d,%d\n", use_fn, x_w, x_h )
+		is_avail = true
+	}
+
+	return
+}
+
+// -------------------------------------------------------------------------------------------------
+// -------------------------------------------------------------------------------------------------
+const hexUUIDPattern = "^([a-z0-9]{8})-([a-z0-9]{4})-([1-5][a-z0-9]{3})-([a-z0-9]{4})-([a-z0-9]{12})$"
+
+var uuidPattern *regexp.Regexp
+
+func init() {
+	uuidPattern = regexp.MustCompile(hexUUIDPattern)
+}
+
+func IsUUID(s string) bool {
+	md := uuidPattern.FindStringSubmatch(s)
+	if md == nil {
+		return false
+	}
+	return true
+}
+
+// -------------------------------------------------------------------------------------------------
+// -------------------------------------------------------------------------------------------------
+func GetColumns(rows *pgx.Rows) (columns []string, err error) {
+	var fd []pgx.FieldDescription
+	fd = rows.FieldDescriptions()
+	columns = make([]string, 0, len(fd))
+	for _, vv := range fd {
+		columns = append(columns, vv.Name)
+	}
+	return
+}
+
+// -------------------------------------------------------------------------------------------------
+// -------------------------------------------------------------------------------------------------
+// func RowsToInterface(rows *sql.Rows) ([]map[string]interface{}, string, int) {
+func RowsToInterface(rows *pgx.Rows) ([]map[string]interface{}, string, int) {
+
+	var finalResult []map[string]interface{}
+	var oneRow map[string]interface{}
+	var id string
+
+	id = ""
+
+	// Get column names
+	// columns, err := rows.Columns()
+	columns, err := GetColumns(rows)
+	if err != nil {
+		panic(err.Error())
+	}
+	length := len(columns)
+
+	// Make a slice for the values
+	values := make([]interface{}, length)
+
+	// rows.Scan wants '[]interface{}' as an argument, so we must copy the
+	// references into such a slice
+	// See http://code.google.com/p/go-wiki/wiki/InterfaceSlice for details
+	scanArgs := make([]interface{}, length)
+	for i := range values {
+		scanArgs[i] = &values[i]
+	}
+
+	// Fetch rows
+	j := 0
+	for rows.Next() {
+		oneRow = make(map[string]interface{}, length)
+		err = rows.Scan(scanArgs...)
+		if err != nil {
+			panic(err.Error())
+		}
+
+		// Print data
+		for i, value := range values {
+			// fmt.Printf ( "at top i=%d %T\n", i, value )
+			switch value.(type) {
+			case nil:
+				// fmt.Println("n, %s", columns[i], ": NULL", godebug.LF())
+				oneRow[columns[i]] = nil
+
+			case []byte:
+				// fmt.Printf("[]byte, len = %d, %s\n", len(value.([]byte)), godebug.LF())
+				// if len==16 && odbc - then - convert from UniversalIdentifier to string (UUID convert?)
+				if len(value.([]byte)) == 16 {
+					// var u *uuid.UUID
+					if IsUUID(fmt.Sprintf("%s", value.([]byte))) {
+						u, err := uuid.Parse(value.([]byte))
+						if err != nil {
+							// fmt.Printf("Error: Invalid UUID parse, %s\n", godebug.LF())
+							oneRow[columns[i]] = string(value.([]byte))
+							if columns[i] == "id" && j == 0 {
+								id = fmt.Sprintf("%s", value)
+							}
+						} else {
+							if columns[i] == "id" && j == 0 {
+								id = u.String()
+							}
+							oneRow[columns[i]] = u.String()
+							// fmt.Printf(">>>>>>>>>>>>>>>>>> %s, %s\n", value, godebug.LF())
+						}
+					} else {
+						if columns[i] == "id" && j == 0 {
+							id = fmt.Sprintf("%s", value)
+						}
+						oneRow[columns[i]] = string(value.([]byte))
+						// fmt.Printf(">>>>> 2 >>>>>>>>>>>>> %s, %s\n", value, godebug.LF())
+					}
+				} else {
+					// Floats seem to end up at this point - xyzzy - instead of float64 -- so....  Need to check our column type info and see if 'f'  ---- xyzzy
+					// fmt.Println("s", columns[i], ": ", string(value.([]byte)))
+					if columns[i] == "id" && j == 0 {
+						id = fmt.Sprintf("%s", value)
+					}
+					oneRow[columns[i]] = string(value.([]byte))
+				}
+
+			case int64:
+				// fmt.Println("i, %s", columns[i], ": ", value, godebug.LF())
+				// oneRow[columns[i]] = fmt.Sprintf ( "%v", value )	// PJS-2014-03-06 - I suspect that this is a defect
+				oneRow[columns[i]] = value
+
+			case float64:
+				// fmt.Println("f, %s", columns[i], ": ", value, godebug.LF())
+				// oneRow[columns[i]] = fmt.Sprintf ( "%v", value )
+				// fmt.Printf ( "yes it is a float\n" )
+				oneRow[columns[i]] = value
+
+			case bool:
+				// fmt.Println("b, %s", columns[i], ": ", value, godebug.LF())
+				// oneRow[columns[i]] = fmt.Sprintf ( "%v", value )		// PJS-2014-03-06
+				// oneRow[columns[i]] = fmt.Sprintf ( "%t", value )		"true" or "false" as a value
+				oneRow[columns[i]] = value
+
+			case string:
+				// fmt.Printf("string, %s\n", godebug.LF())
+				if columns[i] == "id" && j == 0 {
+					id = fmt.Sprintf("%s", value)
+				}
+				// fmt.Println("S", columns[i], ": ", value)
+				oneRow[columns[i]] = fmt.Sprintf("%s", value)
+
+			// Xyzzy - there is a timeNull structure in the driver - why is that not returned?  Maybee it is????
+			// oneRow[columns[i]] = nil
+			case time.Time:
+				oneRow[columns[i]] = (value.(time.Time)).Format(ISO8601output)
+
+			default:
+				// fmt.Printf ( "default, yes it is a... , i=%d, %T\n", i, value, godebug.LF() )
+				// fmt.Println("r", columns[i], ": ", value)
+				if columns[i] == "id" && j == 0 {
+					id = fmt.Sprintf("%v", value)
+				}
+				oneRow[columns[i]] = fmt.Sprintf("%v", value)
+			}
+			//fmt.Printf("\nType: %s\n", reflect.TypeOf(value))
+		}
+		// fmt.Println("-----------------------------------")
+		finalResult = append(finalResult, oneRow)
+		j++
+	}
+	return finalResult, id, j
+}
+
+// -------------------------------------------------------------------------------------------------
+// -------------------------------------------------------------------------------------------------
+func SelQ(db *pgx.Conn, q string, data ...interface{}) (Rows *pgx.Rows, err error) {
+	//godebug.TraceDb2("SelQ", q, data...)
+	//godebug.TrIAmAt2(fmt.Sprintf("Query (%s) with data:", q))
+	//godebug.DumpVar(data)
+	if len(data) == 0 {
+		Rows, err = db.Query(q)
+	} else {
+		Rows, err = db.Query(q, data...)
+	}
+	if err != nil {
+		// tr.TraceDbError2("SelQ", q, err)
+		_, file, line, _ := runtime.Caller(1)
+		fmt.Printf("Database error (%v) at %s:%d, query=%s\n", err, file, line, q)
+	}
+	return
+}
+
+// -------------------------------------------------------------------------------------------------
+// -------------------------------------------------------------------------------------------------
+func SelDataTrx(db *pgx.Conn, trx *tr.Trx, q string, data ...interface{}) []map[string]interface{} {
+	trx.SetQry(q, 2, data...)
+	top_dir, err := SelData2(db, q, data...)
+	if err == nil {
+		trx.SetQryDone("", SVar(top_dir))
+	} else {
+		trx.SetQryDone(fmt.Sprintf("Error(10024): %v", err), "")
+	}
+	return top_dir
+}
+
+// -------------------------------------------------------------------------------------------------
+// -------------------------------------------------------------------------------------------------
+func SelData2(db *pgx.Conn, q string, data ...interface{}) ([]map[string]interface{}, error) {
+	// 1 use "sel" to do the query
+	// func sel ( res http.ResponseWriter, req *http.Request, db *pgx.Conn, q string, data ...interface{} ) ( Rows *sql.Rows, err error ) {
+	Rows, err := SelQ(db, q, data...)
+
+	if err != nil {
+		fmt.Printf("Params: %s\n", SVar(data))
+		// godebug.IAmAt2( fmt.Sprintf ( "Error (%s)", err ) )
+		return make([]map[string]interface{}, 0, 1), err
+	}
+
+	rv, _, n := RowsToInterface(Rows)
+
+	_ = n
+	// tr.TraceDbEnd("SelData", q, n)
+	return rv, err
+}
+
+// -------------------------------------------------------------------------------------------------
+// -------------------------------------------------------------------------------------------------
+func SelData(db *pgx.Conn, q string, data ...interface{}) []map[string]interface{} {
+	// 1 use "sel" to do the query
+	// func sel ( res http.ResponseWriter, req *http.Request, db *pgx.Conn, q string, data ...interface{} ) ( Rows *sql.Rows, err error ) {
+	// fmt.Printf("in SelData, %s\n", godebug.LF())
+
+	Rows, err := SelQ(db, q, data...)
+
+	// fmt.Printf("in SelData, %s, Rows=%s\n", godebug.LF(), Rows)
+
+	if err != nil {
+		fmt.Printf("Params: %s\n", SVar(data))
+		// godebug.IAmAt2( fmt.Sprintf ( "Error (%s)", err ) )
+		return make([]map[string]interface{}, 0, 1)
+	}
+
+	// fmt.Printf("in SelData, %s\n", godebug.LF())
+
+	rv, _, n := RowsToInterface(Rows)
+	_ = n
+
+	// fmt.Printf("in SelData, %s, rv=%s\n", godebug.LF(), rv)
+
+	// tr.TraceDbEnd("SelData", q, n)
+	return rv
+}
+
+// -------------------------------------------------------------------------------------------------
+// -------------------------------------------------------------------------------------------------
+func DeleteImgSetId(mdata map[string]string) {
+	key := "img_set_id/" + mdata["r0"] + "/" + mdata["g0"] + "/" + mdata["u0"]
+	_, ok := mdata[key]
+	if ok {
+		delete(mdata, key)
+	}
+}
+
+// -------------------------------------------------------------------------------------------------
+// -------------------------------------------------------------------------------------------------
+func GetImgSetId(db *pgx.Conn, mdata map[string]string) (string, bool) {
+	/* done - need user_id(security) and other info on this select */
+	// mdata["u0"] = opts.UserID
+	// mdata["g0"] = opts.Group
+	// mdata["r0"] = opts.ImgSet
+	key := "img_set_id/" + mdata["r0"] + "/" + mdata["g0"] + "/" + mdata["u0"]
+	t, ok := mdata[key]
+	if ok {
+		return t, true
+	}
+	img_set_id_row := SelData(db, `
+		select t1."id" 
+		from "img_set" as t1, "img_group" as t2, "img_user_group" as t3, "img_user" as t4
+		where t1."img_set_dir" = $1 
+		  and t2."group_dir" = $2
+		  and t2."id" = t1."group_id"
+		  and t4."user_dir" = $3
+		  and t3."user_id" = t4."user_id"
+		  and t3."group_id" = t2."id"
+		`, mdata["r0"], mdata["g0"], mdata["u0"])
+	if len(img_set_id_row) > 0 {
+		img_set_id := img_set_id_row[0]["id"].(string)
+		mdata[key] = img_set_id
+		return img_set_id_row[0]["id"].(string), true
+	} else {
+		return "", false
+	}
+}
+
+// -------------------------------------------------------------------------------------------------
+// AddAMissingFile ( db, Qt("%{dir%}/%{pth%}/%{v3%}", mdata )
+// -------------------------------------------------------------------------------------------------
+func AddAMissingFile(db *pgx.Conn, full string, mdata map[string]string, status string) {
+	mdata["v2"] = full
+	img_set_id, found := GetImgSetId(db, mdata)
+	if !found {
+		return
+	}
+
+	base_file_name := RmExt(full) // Strip the extension from the file name
+
+	width, height := GetImageFromFile(full)
+
+	_, fi := ExistsGetUDate(full)
+	mdata["xx"] = fi.ModTime().Format("2006-01-02 15:04:05.999999999")
+
+	mdata["img_set_id"] = img_set_id
+
+	// xyzzy - .jpg below
+
+	Run1(db, `insert into "img_file" (
+			  "file_name"
+			, "img_set_id"
+			, "ext"
+			, "width"
+			, "height"
+			, "base_file_name"
+			, "upload_time"
+			, "status"
+			, "img_seq"
+			, "n_acc"
+			, "user_dir"
+			, "group_dir"
+			, "img_set_dir"
+		) values ( 
+			  $1		
+			, $2	
+			, '.jpg'
+			, $3
+			, $4 		
+			, $5	
+			, $6
+			, $7		
+			, 999999999
+			, 0		
+			, $8
+			, $9		
+			, $10	
+		)`,
+		full,           /* 1 */
+		img_set_id,     /* 2 */
+		width,          /* 3 */
+		height,         /* 4 */
+		base_file_name, /* 5 */
+		mdata["xx"],    /* 6 */
+		status,         /* 7 */
+		mdata["u0"],    /* 8 */
+		mdata["g0"],    /* 9 */
+		mdata["r0"])    /* 10 */
+}
+
+// -------------------------------------------------------------------------------------------------
+// xyzzy-Rewrite
+// -------------------------------------------------------------------------------------------------
+func HaveFileAlready(db *pgx.Conn, full string, mdata map[string]string) (got_it bool) {
+	got_it = false
+	var q string
+	mdata["v2"] = full
+	q = Qt("select true as \"found\" from \"img_file\" where \"file_name\" = '%{v2%}' limit 1", mdata)
+
+	Rows, err := db.Query(q)
+	if err != nil {
+		fmt.Printf("Error (150) on talking to database, %s\n", err)
+		return
+	} else {
+		defer Rows.Close()
+	}
+
+	var x_junk bool
+	n_row := 0
+	for Rows.Next() {
+		n_row++
+		err = Rows.Scan(&x_junk)
+		if err != nil {
+			fmt.Printf("Error (162) on retreiving row from database, %s\n", err)
+			return
+		}
+	}
+	if n_row == 0 {
+		fmt.Printf("Error (166) NO rows returned, query=%s\n", q)
+		return
+	}
+	got_it = true
+	return
+}
+
+// -------------------------------------------------------------------------------------------------
+// test: t-run1q.go, .sql, .out
+// -------------------------------------------------------------------------------------------------
+func Run1(db *pgx.Conn, q string, arg ...interface{}) error {
+	//tr.TraceDb2 ( "Run1", q, arg... )
+	h := HashStr.HashStrToName(q) + q
+	ps, err := db.Prepare(h, q)
+	if err != nil {
+		//tr.TraceDbError2 ( "Run1.(Prepare)", q, err )
+		return err
+	}
+	_ = ps
+
+	// _, err = stmt.Exec(h, arg...)
+	_, err = db.Exec(h, arg...)
+	if err != nil {
+		//tr.TraceDbError2 ( "Run1.(Exec)", q, err )
+		return err
+	}
+
+	//tr.TraceDbEnd ( "Run1.(*Success*)", q, 0 )
+	return nil
+}
+
+func Run2(db *pgx.Conn, q string, arg ...interface{}) (nr int64, err error) {
+	nr = 0
+	err = nil
+
+	h := HashStr.HashStrToName(q) + q
+
+	//tr.TraceDb2 ( "Run1", q, arg... )
+	ps, err := db.Prepare(h, q)
+	if err != nil {
+		//tr.TraceDbError2 ( "Run1.(Prepare)", q, err )
+		return
+	}
+	_ = ps
+
+	// R, err := stmt.Exec(h, arg...)
+	R, err := db.Exec(h, arg...)
+	if err != nil {
+		//tr.TraceDbError2 ( "Run1.(Exec)", q, err )
+		return
+	}
+
+	//nr, err = R.RowsAffected()
+	//if err != nil {
+	//	//tr.TraceDbError2 ( "Run1.(Exec)", q, err )
+	//	return
+	//}
+	nr = R.RowsAffected()
+
+	//tr.TraceDbEnd ( "Run1.(*Success*)", q, 0 )
+	return
+}
+
+// -------------------------------------------------------------------------------------------------
+// -------------------------------------------------------------------------------------------------
+func Run1Thx(db *pgx.Conn, trx *tr.Trx, q string, data ...interface{}) error {
+	h := HashStr.HashStrToName(q) + q
+
+	trx.SetQry(q, 2, data...)
+	ps, err := db.Prepare(h, q)
+	if err != nil {
+		trx.SetQryDone(fmt.Sprintf("Error(10026): during Prepare, Run1Thx, %v", err), "")
+		return err
+	}
+	_ = ps
+
+	// _, err = stmt.Exec(h, data...)
+	_, err = db.Exec(h, data...)
+	if err != nil {
+		trx.SetQryDone(fmt.Sprintf("Error(10027): during Exec, Run1Thx, %v", err), "")
+		return err
+	}
+
+	trx.SetQryDone("success", "")
+	return nil
+}
+
+// -------------------------------------------------------------------------------------------------
+// -------------------------------------------------------------------------------------------------
+func InsUpd(db *pgx.Conn, ins string, upd string, mdata map[string]string) {
+	ins_q := Qt(ins, mdata)
+	// fmt.Printf("     insUpd(ins) %s\n", ins_q)
+	err := Run1(db, ins_q)
+	if err != nil {
+		// fmt.Printf("Error (1) in insUpd = %s\n", err)
+		upd_q := Qt(upd, mdata)
+		// fmt.Printf("     insUpd(upd) %s\n", upd_q)
+		err = Run1(db, upd_q)
+		if err != nil {
+			fmt.Printf("Error (2) in insUpd = %s\n", err)
+		}
+	}
+}
+
+// -------------------------------------------------------------------------------------------------
+// xyzzy-Rewrite
+//	mdata["group_id"] = insSel ( "select \"id\" from \"img_group\" where \"group_name\" = '%{user_id%}'",
+// -------------------------------------------------------------------------------------------------
+func InsSel(db *pgx.Conn, sel string, ins string, mdata map[string]string) (id string) {
+
+	id = ""
+	q := Qt(sel, mdata)
+
+	Rows, err := db.Query(q)
+	if err != nil {
+		fmt.Printf("Error (237) on talking to database, %s\n", err)
+		return
+	} else {
+		defer Rows.Close()
+	}
+
+	var x_id string
+	n_row := 0
+	for Rows.Next() {
+		//  fmt.Printf ("Inside Rows Next\n" );
+		n_row++
+		err = Rows.Scan(&x_id)
+		if err != nil {
+			fmt.Printf("Error (249) on retreiving row from database, %s\n", err)
+			return
+		}
+	}
+	if n_row > 1 {
+		fmt.Printf("Error (260) too many rows returned, n_rows=%d\n", n_row)
+		return
+	}
+	if n_row == 1 {
+		id = x_id
+		return
+	}
+
+	y_id, _ := uuid.NewV4()
+	id = y_id.String()
+	mdata["id"] = id
+
+	q = Qt(ins, mdata)
+
+	Run1(db, q)
+	return
+}
+
+// -------------------------------------------------------------------------------------------------
+// Depends on base file name being in mdata["v2"], "u0", "g0", "r0"
+// Sets:
+//	mdata["width"] to width
+//	mdata["height"] to height
+//	mdata["full"] file name it is working on
+//	mdata["b_fn"] to the basename of the file
+// -------------------------------------------------------------------------------------------------
+func SaveUpdateImageSize(db *pgx.Conn, full string, mdata map[string]string, width int, height int) {
+	mdata["width"] = fmt.Sprintf("%d", width)
+	mdata["height"] = fmt.Sprintf("%d", height)
+	mdata["full"] = full
+	mdata["b_fn"] = Basename(RmExt(mdata["v2"]))
+	fmt.Printf("SaveUpdateImgSize: base-file-name=%s\n", mdata["b_fn"])
+	InsUpd(db, "insert into \"img_file\" ( \"file_name\", \"width\", \"height\", \"base_file_name\", \"img_set_id\", \"user_dir\", \"group_dir\", \"img_set_dir\" ) values ( '%{full%}', %{width%}, %{height%}, '%{b_fn%}', '%{set_id%}', '%{u0%}', '%{g0%}', '%{r0%}' )",
+		"update \"img_file\" set \"width\" = %{width%}, \"height\" = %{height%}, \"base_file_name\" = '%{b_fn%}', \"img_set_id\" = '%{set_id%}', \"user_dir\" = '%{u0%}', \"group_dir\" = '%{g0%}', \"img_set_dir\" = '%{r0%}' where \"file_name\" = '%{full%}'", mdata)
+}
+
+// -------------------------------------------------------------------------------------------------
+// SaveUpdateImageCss ( db, thumb46x, mdata, Qt ( "height:45px;width:%{th46x_wM1%}px;
+// background:url('%{img_prefix%}%{img_path%}/thumb-all.x46.jpg?rnd=%{rnd%}') no-repeat -%{tx46x_P1%}px 0px;", mdata ) )
+// -------------------------------------------------------------------------------------------------
+func SaveUpdateImageCss(db *pgx.Conn, full string, mdata map[string]string, s string) {
+	// mdata["bn_raw"] = RmExt(v2)							// base name raw for fiel name in URL		-- Xyzzy82
+	mdata["cssString"] = s
+	mdata["full"] = full
+	upd := `update "img_file" set "cssClass" = $1 where "file_name" = $2 or ( "height" = 46 and "base_file_name" = $3 )`
+	fmt.Printf("     SaveUpdateImageCSS: %s, [ %s, %s, %s ]\n", upd, full, s, mdata["bn_raw"])
+	err := Run1(db, upd, s, full, mdata["bn_raw"])
+	if err != nil {
+		fmt.Printf("Error (350) in insUpd = %s\n", err)
+	}
+}
+
+// -------------------------------------------------------------------------------------------------
+/*
+type FileInfo interface {
+	Name() string       // base name of the file
+	Size() int64        // length in bytes for regular files; system-dependent for others
+	Mode() FileMode     // file mode bits
+	ModTime() time.Time // modification time
+	IsDir() bool        // abbreviation for Mode().IsDir()
+	Sys() interface{}   // underlying data source (can return nil)
+}
+*/
+// Tested
+// Exists reports whether the named file or directory exists.
+// -------------------------------------------------------------------------------------------------
+func ExistsGetUDate(name string) (bool, os.FileInfo) {
+	fi, err := os.Stat(name)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+	}
+	return true, fi
+}
+
+func ExistsIsDir(name string) bool {
+	fi, err := os.Stat(name)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false
+		}
+	}
+	if fi.IsDir() {
+		return true
+	}
+	return false
+}
+
+// -------------------------------------------------------------------------------------------------
+// -------------------------------------------------------------------------------------------------
+func DumpVar(v interface{}) {
+	// s, err := json.Marshal ( v )
+	s, err := json.MarshalIndent(v, "", "\t")
+	if err != nil {
+		fmt.Printf("Error: %s\n", err)
+	} else {
+		fmt.Printf("%s\n", s)
+	}
+}
+
+// -------------------------------------------------------------------------------------------------
+// xyzzy - str.
+// Return the basename from a file path.  This is the last component with the directory path
+// stripped off.  File extension removed.
+// -------------------------------------------------------------------------------------------------
+func Basename(fn string) (bn string) {
+	i, j := strings.LastIndex(fn, "/"), strings.LastIndex(fn, path.Ext(fn)) // xyzzy windoz
+	// fmt.Printf ( "i=%d j=%d\n", i, j )
+	if i < 0 && j < 0 {
+		bn = fn
+	} else if i < 0 {
+		bn = fn[0:j]
+	} else {
+		bn = fn[i+1 : j]
+	}
+	return
+}
+
+// -------------------------------------------------------------------------------------------------
+// xyzzy - str.
+// With file extension
+// -------------------------------------------------------------------------------------------------
+func BasenameExt(fn string) (bn string) {
+	i, j := strings.LastIndex(fn, "/"), len(fn) // xyzzy windoz
+	// fmt.Printf ( "i=%d j=%d\n", i, j )
+	if i < 0 && j < 0 {
+		bn = fn
+	} else if i < 0 {
+		bn = fn[0:j]
+	} else {
+		bn = fn[i+1 : j]
+	}
+	return
+}
+
+// -------------------------------------------------------------------------------------------------
+// Get a list of filenames and directorys.
+// xyzzy - fil.
+// -------------------------------------------------------------------------------------------------
+func GetFilenames(dir string) (filenames, dirs []string) {
+	files, err := ioutil.ReadDir(dir)
+	if err != nil {
+		return nil, nil
+	}
+	for _, fstat := range files {
+		if !strings.HasPrefix(string(fstat.Name()), ".") {
+			if fstat.IsDir() {
+				dirs = append(dirs, fstat.Name())
+			} else {
+				filenames = append(filenames, fstat.Name())
+			}
+		}
+	}
+	return
+}
+
+// -------------------------------------------------------------------------------------------------
+// xyzzy - str.
+// -------------------------------------------------------------------------------------------------
+func InArray(lookFor string, inArr []string) bool {
+	for _, v := range inArr {
+		if lookFor == v {
+			return true
+		}
+	}
+	return false
+}
+
+// -------------------------------------------------------------------------------------------------
+// -------------------------------------------------------------------------------------------------
+func FilterArray(re string, inArr []string) (outArr []string) {
+	var validID = regexp.MustCompile(re)
+
+	outArr = make([]string, 0, len(inArr))
+	for k := range inArr {
+		if validID.MatchString(inArr[k]) {
+			outArr = append(outArr, inArr[k])
+		}
+	}
+	// fmt.Printf ( "output = %v\n", outArr )
+	return
+}
+
+// -------------------------------------------------------------------------------------------------
+// list of image files in a directory
+// -------------------------------------------------------------------------------------------------
+func GetImageFiles(dir string) []string {
+	filenames, _ := GetFilenames(dir)
+	// xyzzy - case sensitive!
+	imgFn := FilterArray(".jpg$|.jpeg$|.png$|.gif$", filenames)
+	return imgFn
+}
+
+// -------------------------------------------------------------------------------------------------
+// -------------------------------------------------------------------------------------------------
+func GetFile(fn string) string {
+	file, err := ioutil.ReadFile(fn)
+	if err != nil {
+		fmt.Printf("Error(10103): File (%s) missing or unreadable error: %v\n", fn, err)
+		return ""
+	}
+	return string(file)
+}
+
+// -------------------------------------------------------------------------------------------------
+// -------------------------------------------------------------------------------------------------
+func PutSize(fn string, th image.Image) { // Output Size on Image
+	out, err := os.Create(fn)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer out.Close()
+
+	w, h := GetSizeOfImage(th)
+
+	fmt.Fprintf(out, "{\n\"height\": %d\n,\"width\": %d\n}\n", h, w)
+}
+
+// -------------------------------------------------------------------------------------------------
+// -------------------------------------------------------------------------------------------------
+func PutSizeWH(fn string, w int, h int) { // Output Size on Image
+	out, err := os.Create(fn)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer out.Close()
+
+	fmt.Fprintf(out, "{\n\"height\": %d\n,\"width\": %d\n}\n", h, w)
+}
+
+// -------------------------------------------------------------------------------------------------
+// -------------------------------------------------------------------------------------------------
+type infoOnFile struct {
+	Height int
+	Width  int
+}
+
+// -------------------------------------------------------------------------------------------------
+// _, _ = getSize ( genFnImg ( "%s/%s_cache/%s.x100.info", dir, pth, v2 ) )
+// -------------------------------------------------------------------------------------------------
+func GetSize(fn string) (int, int) {
+	file, err := ioutil.ReadFile(fn)
+	if err != nil {
+		fmt.Printf("File error: %v\n", err)
+	}
+
+	var ii infoOnFile
+
+	json.Unmarshal(file, &ii)
+
+	return ii.Width, ii.Height
+}
+
+// -------------------------------------------------------------------------------------------------
+// xyzzy - im.
+// WxH on image file
+// -------------------------------------------------------------------------------------------------
+func GetSizeOfImage(img image.Image) (w, h int) {
+	r := img.Bounds()
+	h = r.Dy()
+	w = r.Dx()
+	// fmt.Fprintf(os.Stdout, "w=%d h=%d\n", w, h)
+	return
+}
+
+// -------------------------------------------------------------------------------------------------
+// xyzzy - im.
+// parse size 0000x9999 return 0000, hash 0000, 9999 has 9999
+// -------------------------------------------------------------------------------------------------
+func ParseSize(siz string) (int, int) {
+	var re = regexp.MustCompile("([0-9]*)x([0-9]*)")
+	x := re.FindAllStringSubmatch(siz, -1)
+	sw := x[0][1]
+	w, err := strconv.Atoi(sw)
+	if err != nil {
+		w = 0
+	}
+	sh := x[0][2]
+	h, err := strconv.Atoi(sh)
+	if err != nil {
+		h = 0
+	}
+	return w, h
+}
+
+// -------------------------------------------------------------------------------------------------
+// xyzzy - im.
+// read image file - handles .jpg, .jpeg, .gif, .png
+// -------------------------------------------------------------------------------------------------
+func GetImg(fn string) (img image.Image, err error) {
+	typ := filepath.Ext(fn)
+	file, err := os.Open(fn)
+	defer file.Close()
+	if err != nil {
+		log.Fatal(err)
+		return
+	}
+
+	// var img image.Image
+	// fmt.Printf ( "typ=[%s]\n", typ );
+	if typ == ".jpg" || typ == ".jpeg" {
+		img, err = jpeg.Decode(file)
+	} else if typ == ".gif" {
+		img, err = gif.Decode(file)
+	} else if typ == ".png" {
+		img, err = png.Decode(file)
+	} else {
+		err = errors.New("Invalid file type")
+	}
+	if err != nil {
+		log.Fatal(err)
+		return
+	}
+	err = nil
+	return
+}
+
+// -------------------------------------------------------------------------------------------------
+// xyzzy - im.
+// -------------------------------------------------------------------------------------------------
+func GetImg2(base string, fn string) (img image.Image, err error) {
+	return GetImg(base + "/" + fn)
+}
+
+// -------------------------------------------------------------------------------------------------
+// xyzzy - im.
+// -------------------------------------------------------------------------------------------------
+// output image file in jpg with XX quality
+func PutImg(fn string, img image.Image, quality int) {
+
+	out, err := os.Create(fn)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer out.Close()
+
+	var o jpeg.Options
+	o.Quality = quality
+
+	jpeg.Encode(out, img, &o) // write new image to file
+}
+
+// -------------------------------------------------------------------------------------------------
+// xyzzy - im.
+// -------------------------------------------------------------------------------------------------
+func PutImg2(base string, fn string, img image.Image, quality int) {
+	PutImg(base+"/"+fn, img, quality)
+}
+
+// -------------------------------------------------------------------------------------------------
+// xyzzy - fil.
+// -------------------------------------------------------------------------------------------------
+func PutString(fn string, s string) {
+
+	out, err := os.Create(fn)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer out.Close()
+
+	fmt.Fprintf(out, "%s", s)
+}
+
+// -------------------------------------------------------------------------------------------------
+// xyzzy - im.
+// resize image to
+// -------------------------------------------------------------------------------------------------
+func ResizeImage(img image.Image, new_w int, new_h int) (m image.Image) {
+	m = resize.Resize(uint(new_w), uint(new_h), img, resize.Bicubic)
+	return
+}
+
+// -------------------------------------------------------------------------------------------------
+// This could be more effecient - may do 2 resize operations to get inside max_w, max_h
+// -------------------------------------------------------------------------------------------------
+func ResizeImg2(img image.Image, max_w int, max_h int) (m image.Image, cur_w int, cur_h int) {
+	m = ResizeImage(img, 0, max_h)
+	cur_w, cur_h = GetSizeOfImage(m)
+	if cur_w > max_w {
+		m = ResizeImage(img, max_w, 0)
+		cur_w, cur_h = GetSizeOfImage(m)
+	}
+	return
+}
+
+// -------------------------------------------------------------------------------------------------
+// Tested
+// -------------------------------------------------------------------------------------------------
+func RmExt(filename string) string {
+	var extension = filepath.Ext(filename)
+	var name = filename[0 : len(filename)-len(extension)]
+	return name
+}
+
+// -------------------------------------------------------------------------------------------------
+// xyzzy - str.
+// Tested
+// -------------------------------------------------------------------------------------------------
+func FnToCssClass(filename string) string {
+	re2 := regexp.MustCompile("[^-a-zA-Z0-9_]")
+	s := re2.ReplaceAllLiteralString(filename, "-")
+	return s
+}
+
+// -------------------------------------------------------------------------------------------------
+// time.After - see
+// -------------------------------------------------------------------------------------------------
+func getMtimeOfFile(fn string) (tm time.Time, err error) {
+	info, err := os.Stat(fn)
+	if err != nil {
+		return
+	}
+	tm = info.ModTime()
+	return
+}
+
+// -------------------------------------------------------------------------------------------------
+// -------------------------------------------------------------------------------------------------
+func NeedRebuild(parent string, opts_Rebuild bool, child string, child1 string, child2 string) bool {
+	if opts_Rebuild {
+		return true
+	}
+	pt, err := getMtimeOfFile(parent)
+	if err != nil {
+		return false
+	}
+
+	ct, err := getMtimeOfFile(child)
+	if err != nil {
+		return true
+	}
+	t1 := pt.After(ct)
+	if t1 {
+		return true
+	}
+
+	if child1 != "" {
+		ct, err = getMtimeOfFile(child1)
+		if err != nil {
+			return true
+		}
+		t1 = pt.After(ct)
+		if t1 {
+			return true
+		}
+	}
+
+	if child2 != "" {
+		ct, err = getMtimeOfFile(child2)
+		if err != nil {
+			return true
+		}
+		t1 = pt.After(ct)
+		if t1 {
+			return true
+		}
+	}
+
+	return false
+}
+
+// -------------------------------------------------------------------------------------------------
+// mTime on file
+// Compare mTims' to see if need to act - return bool
+// Make directory path
+
+// read JSON file to map
+// -------------------------------------------------------------------------------------------------
+func ReadJsonPath(pth string) map[string]string {
+	var d string
+	c := make(map[string]string, 40)
+	if pth[len(pth)-1] == '/' {
+		d, _ = filepath.Split(pth[0 : len(pth)-1])
+	} else {
+		d, _ = filepath.Split(pth)
+		pth = pth + "/"
+	}
+	if d == "" {
+		if Exists("cfg.json") {
+			c = readJsonFile("cfg.json")
+		}
+		return c
+	} else {
+		c = ReadJsonPath(d)
+	}
+	if Exists(pth + "cfg.json") {
+		m := readJsonFile(pth + "cfg.json")
+		v := ExtendStringMap(c, m)
+		return v
+	}
+	return c
+}
+
+// -------------------------------------------------------------------------------------------------
+// not used
+// -------------------------------------------------------------------------------------------------
+func doPath(pth string) {
+	var d, f string
+	if string(pth[len(pth)-1]) == "/" {
+		d, f = filepath.Split(pth[0 : len(pth)-1])
+	} else {
+		d, f = filepath.Split(pth)
+		pth = pth + "/"
+	}
+	fmt.Printf("d=|%s| f=|%s|\n", d, f)
+	if d == "" {
+		fmt.Printf("doPath: %s\n", "cfg.json")
+	} else {
+		doPath(d)
+	}
+	fmt.Printf("doPath: %s\n", pth+"cfg.json")
+}
+
+// -------------------------------------------------------------------------------------------------
+// -------------------------------------------------------------------------------------------------
+func readJsonFile(fn string) map[string]string {
+	jdata := make(map[string]string, 40) // The posts that match
+	file, e := ioutil.ReadFile(fn)
+	if e != nil {
+		fmt.Printf("File error: %v\n", e)
+		os.Exit(1)
+	}
+
+	json.Unmarshal(file, &jdata)
+	return jdata
+}
+
+// -------------------------------------------------------------------------------------------------
+// Tested
+// Exists reports whether the named file or directory exists.
+// -------------------------------------------------------------------------------------------------
+func Exists(name string) bool {
+	if _, err := os.Stat(name); err != nil {
+		if os.IsNotExist(err) {
+			return false
+		}
+	}
+	return true
+}
+
+// -------------------------------------------------------------------------------------------------
+// See:  https://gobyexample.com/json
+// -------------------------------------------------------------------------------------------------
+func JsonStringToData(s string) (theJSON map[string]interface{}, err error) {
+	err = json.Unmarshal([]byte(s), &theJSON)
+	if err != nil {
+		theJSON = make(map[string]interface{})
+	}
+	return
+}
+
+var JSON_Prefix string = ""
+
+func SetJsonPrefix(p string) {
+	JSON_Prefix = p
+}
+
+// -------------------------------------------------------------------------------------------------
+// Take a string 's' and if a get parameter "callback" is specified then format this for JSONP.
+// -------------------------------------------------------------------------------------------------
+func JsonP(s string, res http.ResponseWriter, req *http.Request) string {
+	// fmt.Printf ( "JsonP passed ->%s<-\n", s )
+	u, _ := url.ParseRequestURI(req.RequestURI)
+	m, _ := url.ParseQuery(u.RawQuery)
+	callback := m.Get("callback")
+	if callback != "" {
+		res.Header().Set("Content-Type", "application/javascript") // For JSONP
+		return fmt.Sprintf("%s(%s);", callback, s)
+	} else {
+		return JSON_Prefix + s
+	}
+}
+
+//
+// Take parameters and convert all of them into a single 'm' data structure.
+// 1. Cookies
+// 2. Get Values
+// 3. Post Form Values
+//
+// The code is in a different order from the 1,2,3 above but will work in this
+// priority.
+//
+//func UriToStringMap ( req *http.Request ) ( m url.Values ) {
+//
+//	ct := req.Header.Get("Content-Type")
+//
+//	db_uriToString := false
+//
+//	if ( db_uriToString ) { fmt.Printf ( "PJS Apr 9: %s Content Type:%v\n", godebug.LF(), ct ) }
+//
+//	u, _ := url.ParseRequestURI(req.RequestURI)
+//	m, _ = url.ParseQuery(u.RawQuery)
+//
+//	// xyzzy - add in cookies??		req.Cookies() -> []string
+//	if ( db_uriToString ) { fmt.Printf ( "Cookies are: %s\n", SVar( req.Cookies() ) ) }
+//	Ck := req.Cookies()
+//	for _, v := range Ck {
+//		if _, ok := m[v.Name]; ! ok {
+//			m[v.Name] = make ( []string, 1 )
+//			m[v.Name][0] = v.Value
+//fmt.Printf ( "Name=%s Value=%s\n", v.Name, v.Value )
+//		}
+//	}
+//
+//fmt.Printf ( "Checking to see if post\n" )
+//
+//	// add in POST parmeters
+//	if req.Method == "POST" || req.Method == "PUT" {
+//fmt.Printf ( "It's a POST, req.PostForm=%v, ct=%s\n", req.PostForm, ct )
+//		if req.PostForm == nil {
+//			if ( db_uriToString ) { fmt.Printf ( "ParseForm has !!!not!!! been  called\n" ) }
+//			if strings.HasPrefix ( ct, "application/json" ) {
+//				body, err2 := ioutil.ReadAll(req.Body)
+//				if err2 != nil {
+//					fmt.Printf ( "err=%v\n", err2 )
+//				}
+//				if ( db_uriToString) { fmt.Printf("body=%s\n",string(body)) }
+//				fmt.Printf("request body=%s\n",string(body))
+//				var jsonData map[string]interface{}
+//				err := json.Unmarshal(body, &jsonData)
+//				if err == nil {
+//					for i, v := range jsonData {
+//						m[i] = make ( []string, 1 )
+//						m[i][0] = fmt.Sprintf ( "%v", v )
+//					}
+//				}
+//			} else {
+//				err := req.ParseForm()
+//				if ( db_uriToString ) { fmt.Printf ( "Form data is now: %s\n", SVar(req.PostForm) ) }
+//				if err != nil {
+//					fmt.Printf ( "Error - parse form just threw an error , why? %v\n", err )
+//				} else {
+//					for i, v := range req.PostForm {
+//						if len(v) > 0 {
+//							m[i] = make ( []string, 1 )
+//							m[i][0] = v[0]
+//						}
+//					}
+//				}
+//			}
+//		} else {
+//			for i, v := range req.PostForm {
+//				if len(v) > 0 {
+//					m[i] = make ( []string, 1 )
+//					m[i][0] = v[0]
+//				}
+//			}
+//		}
+//	}
+//
+//	if ( db_uriToString ) { fmt.Printf ( ">>m=%s\n", SVar(m) ) }
+//
+//	return
+//}
+func UriToStringMap(req *http.Request) (m url.Values, fr map[string]string) {
+
+	ct := req.Header.Get("Content-Type")
+
+	fr = make(map[string]string)
+
+	// db_uriToString := false
+
+	// if ( db_uriToString ) { fmt.Printf ( "PJS Apr 9: %s Content Type:%v\n", godebug.LF(), ct ) }
+	if db_uriToString {
+		fmt.Printf("PJS Sep 20: %s Content Type:%v\n", godebug.LF(), ct)
+	}
+
+	u, _ := url.ParseRequestURI(req.RequestURI)
+	m, _ = url.ParseQuery(u.RawQuery)
+	for i := range m {
+		fr[i] = "Query-String"
+	}
+
+	// xyzzy - add in cookies??		req.Cookies() -> []string
+	// if ( db_uriToString ) { fmt.Printf ( "Cookies are: %s\n", sizlib.SVar( req.Cookies() ) ) }
+	Ck := req.Cookies()
+	for _, v := range Ck {
+		if _, ok := m[v.Name]; !ok {
+			m[v.Name] = make([]string, 1)
+			m[v.Name][0] = v.Value
+			// fmt.Printf ( "Name=%s Value=%s\n", v.Name, v.Value )
+			fr[v.Name] = "Cookie"
+		}
+	}
+
+	// fmt.Printf ( "Checking to see if post\n" )
+
+	// add in POST parmeters
+	if req.Method == "POST" || req.Method == "PUT" || req.Method == "PATCH" || req.Method == "DELETE" {
+		if db_uriToString {
+			fmt.Printf("It's a POST/PUT/PATCH/DELETE, req.PostForm=%v, ct=%s\n", req.PostForm, ct)
+		}
+		if req.PostForm == nil {
+			// if ( db_uriToString ) { fmt.Printf ( "ParseForm has !!!not!!! been  called\n" ) }
+			if strings.HasPrefix(ct, "application/json") {
+				body, err2 := ioutil.ReadAll(req.Body)
+				if err2 != nil {
+					fmt.Printf("err=%v\n", err2)
+				}
+				// if ( db_uriToString) { fmt.Printf("body=%s\n",string(body)) }
+				// fmt.Printf("request body=%s\n",string(body))
+				var jsonData map[string]interface{}
+				err := json.Unmarshal(body, &jsonData)
+				if err == nil {
+					for i, v := range jsonData {
+						m[i] = make([]string, 1)
+						switch v.(type) {
+						case bool:
+							m[i][0] = fmt.Sprintf("%v", v)
+						case float64:
+							m[i][0] = fmt.Sprintf("%v", v)
+						case int64:
+							m[i][0] = fmt.Sprintf("%v", v)
+						case int32:
+							m[i][0] = fmt.Sprintf("%v", v)
+						case time.Time:
+							m[i][0] = fmt.Sprintf("%v", v)
+						case string:
+							m[i][0] = fmt.Sprintf("%v", v)
+						default:
+							m[i][0] = fmt.Sprintf("%s", SVar(v))
+						}
+						fr[i] = "JSON-Encoded-Body/Post"
+					}
+				}
+			} else {
+				err := req.ParseForm()
+				if db_uriToString {
+					fmt.Printf("Form data is now: %s\n", SVar(req.PostForm))
+				}
+				if err != nil {
+					fmt.Printf("Error - parse form just threw an error , why? %v\n", err)
+				} else {
+					for i, v := range req.PostForm {
+						if len(v) > 0 {
+							m[i] = make([]string, 1)
+							m[i][0] = v[0]
+							fr[i] = "URL-Encoded-Body(1-a)/Post"
+						}
+					}
+				}
+			}
+		} else {
+			for i, v := range req.PostForm {
+				if len(v) > 0 {
+					m[i] = make([]string, 1)
+					m[i][0] = v[0]
+					fr[i] = "URL-Encoded-Body(2)/Post"
+				}
+			}
+		}
+	}
+
+	if db_uriToString {
+		fmt.Printf(">>m=%s\n", SVar(m))
+	}
+
+	return
+}
+
+// -------------------------------------------------------------------------------------------------
+// Run a database query, return the rows.  Handle errors.
+// -------------------------------------------------------------------------------------------------
+//func Sel ( res http.ResponseWriter, req *http.Request, db *pgx.Conn, q string, data ...interface{} ) ( Rows *sql.Rows, err error ) {
+//	godebug.TrIAmAt2( fmt.Sprintf ( "Query (%s) with data:", q ) )
+//	godebug.DumpVar ( data )
+//	Rows, err = db.Query(q, data... )
+//	tr.TraceDb ( "Sel", q, data... )
+//	if err != nil {
+//
+//		tr.TraceDbError ( "Sel", q, err )
+//		_, file, line, _ := runtime.Caller(2)
+//		fmt.Printf ( "Database error (%v) at %s:%d\n", err, file, line ) // Xyzzy - need to escape quotes and pass this back in JSON - what about '\' and '''' - encode those?
+//
+//		_, file, line, _ = runtime.Caller(1)
+//		fmt.Printf ( "Database error (%v) at %s:%d\n", err, file, line ) // Xyzzy - need to escape quotes and pass this back in JSON - what about '\' and '''' - encode those?
+//																			// Xyzzy - really should log this
+//		detail := fmt.Sprintf ( "%v", err )
+//		detail = strings.Replace(detail,"\"","\\\"",-1)
+//		io.WriteString(res,JsonP(fmt.Sprintf("{\"status\":\"error\",\"code\":\"625\",\"msg\":\"Database error\",\"file\":\"%s\",\"line\":%d,\"detail\":\"%s\"}",file,line,detail),res,req))
+//
+//	}
+//	return
+//}
+
+// -------------------------------------------------------------------------------------------------
+// Rows to JSON -- Go from a set of "rows" returned by db.Query to a JSON string.
+// -------------------------------------------------------------------------------------------------
+func RowsToJson(rows *pgx.Rows) (string, string) {
+
+	var finalResult []map[string]interface{}
+	var oneRow map[string]interface{}
+	var id string
+
+	id = ""
+
+	// Get column names
+	// columns, err := rows.Columns()
+	columns, err := GetColumns(rows)
+	if err != nil {
+		panic(err.Error())
+	}
+	length := len(columns)
+
+	// Make a slice for the values
+	values := make([]interface{}, length)
+
+	// rows.Scan wants '[]interface{}' as an argument, so we must copy the
+	// references into such a slice
+	// See http://code.google.com/p/go-wiki/wiki/InterfaceSlice for details
+	scanArgs := make([]interface{}, length)
+	for i := range values {
+		scanArgs[i] = &values[i]
+	}
+
+	// Fetch rows
+	j := 0
+	for rows.Next() {
+		oneRow = make(map[string]interface{}, length)
+		err = rows.Scan(scanArgs...)
+		if err != nil {
+			panic(err.Error())
+		}
+
+		// Print data
+		for i, value := range values {
+			// fmt.Printf ( "at top i=%d %T\n", i, value )
+			switch value.(type) {
+			case nil:
+				// fmt.Println("n", columns[i], ": NULL")
+				oneRow[columns[i]] = nil
+
+			case []byte:
+				// Floats seem to end up at this point - xyzzy - instead of float64 -- so....  Need to check our column type info and see if 'f'  ---- xyzzy
+				// fmt.Println("s", columns[i], ": ", string(value.([]byte)))
+				if columns[i] == "id" && j == 0 {
+					id = fmt.Sprintf("%s", value)
+				}
+				oneRow[columns[i]] = string(value.([]byte))
+
+			case int64:
+				// fmt.Println("i", columns[i], ": ", value)
+				// oneRow[columns[i]] = fmt.Sprintf ( "%v", value )	// PJS-2014-03-06 - I suspect that this is a defect
+				oneRow[columns[i]] = value
+
+			case float64:
+				//fmt.Println("f", columns[i], ": ", value)
+				// oneRow[columns[i]] = fmt.Sprintf ( "%v", value )
+				// fmt.Printf ( "yes it is a float\n" )
+				oneRow[columns[i]] = value
+
+			case bool:
+				//fmt.Println("b", columns[i], ": ", value)
+				// oneRow[columns[i]] = fmt.Sprintf ( "%v", value )		// PJS-2014-03-06
+				// oneRow[columns[i]] = fmt.Sprintf ( "%t", value )		"true" or "false" as a value
+				oneRow[columns[i]] = value
+
+			case string:
+				if columns[i] == "id" && j == 0 {
+					id = fmt.Sprintf("%s", value)
+				}
+				// fmt.Println("S", columns[i], ": ", value)
+				oneRow[columns[i]] = fmt.Sprintf("%s", value)
+
+			// Xyzzy - there is a timeNull structure in the driver - why is that not returned?  Maybee it is????
+			case time.Time:
+				//fmt.Printf("time.Time - %s, %s\n", columns[i], godebug.LF())
+				//oneRow[columns[i]] = value
+				oneRow[columns[i]] = (value.(time.Time)).Format(ISO8601output)
+
+			default:
+				// fmt.Printf ( "default, yes it is a... , i=%d, %T\n", i, value )
+				// fmt.Println("r", columns[i], ": ", value)
+				if columns[i] == "id" && j == 0 {
+					id = fmt.Sprintf("%v", value)
+				}
+				oneRow[columns[i]] = fmt.Sprintf("%v", value)
+			}
+			//fmt.Printf("\nType: %s\n", reflect.TypeOf(value))
+		}
+		// fmt.Println("-----------------------------------")
+		finalResult = append(finalResult, oneRow)
+		j++
+	}
+	if j > 0 {
+		s, err := json.MarshalIndent(finalResult, "", "\t")
+		if err != nil {
+			fmt.Printf("Unable to convert to JSON data, %v\n", err)
+		}
+		return string(s), id
+	} else {
+		return "[]", ""
+	}
+}
+
+// -------------------------------------------------------------------------------------------------
+// Rows to JSON -- Go from a set of "rows" returned by db.Query to a JSON string.
+// -------------------------------------------------------------------------------------------------
+func RowsToJsonFirstRow(rows *pgx.Rows) (string, string) {
+
+	// var finalResult   []map[string]interface{}
+	var oneRow map[string]interface{}
+	var id string
+
+	id = ""
+
+	// Get column names
+	// columns, err := rows.Columns()
+	columns, err := GetColumns(rows)
+	if err != nil {
+		panic(err.Error())
+	}
+	length := len(columns)
+
+	// Make a slice for the values
+	values := make([]interface{}, length)
+
+	// rows.Scan wants '[]interface{}' as an argument, so we must copy the
+	// references into such a slice
+	// See http://code.google.com/p/go-wiki/wiki/InterfaceSlice for details
+	scanArgs := make([]interface{}, length)
+	for i := range values {
+		scanArgs[i] = &values[i]
+	}
+
+	// Fetch rows
+	j := 0
+	for rows.Next() {
+		oneRow = make(map[string]interface{}, length)
+		err = rows.Scan(scanArgs...)
+		if err != nil {
+			panic(err.Error())
+		}
+
+		if j == 0 {
+
+			// Print data
+			for i, value := range values {
+				// fmt.Printf ( "at top i=%d %T\n", i, value )
+				switch value.(type) {
+				case nil:
+					// fmt.Println("n", columns[i], ": NULL")
+					oneRow[columns[i]] = nil
+
+				case []byte:
+					// Floats seem to end up at this point - xyzzy - instead of float64 -- so....  Need to check our column type info and see if 'f'  ---- xyzzy
+					// fmt.Println("s", columns[i], ": ", string(value.([]byte)))
+					if columns[i] == "id" && j == 0 {
+						id = fmt.Sprintf("%s", value)
+					}
+					oneRow[columns[i]] = string(value.([]byte))
+
+				case int64:
+					// fmt.Println("i", columns[i], ": ", value)
+					// oneRow[columns[i]] = fmt.Sprintf ( "%v", value )	// PJS-2014-03-06 - I suspect that this is a defect
+					oneRow[columns[i]] = value
+
+				case float64:
+					//fmt.Println("f", columns[i], ": ", value)
+					// oneRow[columns[i]] = fmt.Sprintf ( "%v", value )
+					// fmt.Printf ( "yes it is a float\n" )
+					oneRow[columns[i]] = value
+
+				case bool:
+					//fmt.Println("b", columns[i], ": ", value)
+					// oneRow[columns[i]] = fmt.Sprintf ( "%v", value )		// PJS-2014-03-06
+					// oneRow[columns[i]] = fmt.Sprintf ( "%t", value )		"true" or "false" as a value
+					oneRow[columns[i]] = value
+
+				case string:
+					if columns[i] == "id" && j == 0 {
+						id = fmt.Sprintf("%s", value)
+					}
+					// fmt.Println("S", columns[i], ": ", value)
+					oneRow[columns[i]] = fmt.Sprintf("%s", value)
+
+				// Xyzzy - there is a timeNull structure in the driver - why is that not returned?  Maybee it is????
+				case time.Time:
+					oneRow[columns[i]] = (value.(time.Time)).Format(ISO8601output)
+
+				default:
+					// fmt.Printf ( "default, yes it is a... , i=%d, %T\n", i, value )
+					// fmt.Println("r", columns[i], ": ", value)
+					if columns[i] == "id" && j == 0 {
+						id = fmt.Sprintf("%v", value)
+					}
+					oneRow[columns[i]] = fmt.Sprintf("%v", value)
+				}
+				//fmt.Printf("\nType: %s\n", reflect.TypeOf(value))
+			}
+		}
+		// fmt.Println("-----------------------------------")
+		// finalResult = append ( finalResult, oneRow )
+		j++
+	}
+	if j > 0 {
+		s, err := json.MarshalIndent(oneRow, "", "\t")
+		if err != nil {
+			fmt.Printf("Unable to convert to JSON data, %v\n", err)
+		}
+		return string(s), id
+	} else {
+		return "{}", ""
+	}
+}
+
+//------------------------------------------------------------------------------------------------
+// Copy 'a', then copy 'b' over 'a'
+// Tests:  t-extendData.go
+//------------------------------------------------------------------------------------------------
+// jDataDefaults = lowerCaseNames ( jDataDefaults )
+func LowerCaseNames(a map[string]interface{}) (rv map[string]interface{}) {
+	rv = make(map[string]interface{})
+	for i, v := range a {
+		rv[strings.ToLower(i)] = v
+	}
+	return
+}
+
+func ExtendData(a map[string]interface{}, b map[string]interface{}) (rv map[string]interface{}) {
+	rv = make(map[string]interface{})
+	for i, v := range a {
+		rv[i] = v
+	}
+	for i, v := range b {
+		rv[i] = v
+	}
+	return
+}
+
+// Copy 'a', if same key in 'b', then copy data from b, prefering data from 'b'
+func LeftData(a map[string]interface{}, b map[string]interface{}) (rv map[string]interface{}) {
+	rv = make(map[string]interface{})
+	for i, v := range a {
+		rv[i] = v
+	}
+	for i, v := range b {
+		if _, ok := a[i]; ok {
+			rv[i] = v
+		}
+	}
+	return
+}
+
+// Keep the data that has common keys between 'a' and 'b', prefering data from 'b'
+// not used at the moment.
+func IntersectData(a map[string]interface{}, b map[string]interface{}) (rv map[string]interface{}) {
+	rv = make(map[string]interface{})
+	for i, v := range a {
+		if _, ok := b[i]; ok {
+			rv[i] = v
+		}
+	}
+	for i, v := range b {
+		if _, ok := a[i]; ok {
+			rv[i] = v
+		}
+	}
+	return
+}
+
+func ExtendDataS(a map[string]string, b map[string]string) (rv map[string]string) {
+	rv = make(map[string]string)
+	for i, v := range a {
+		rv[i] = v
+	}
+	for i, v := range b {
+		rv[i] = v
+	}
+	return
+}
+
+//------------------------------------------------------------------------------------------------
+func EscapeDoubleQuote(s string) string {
+	return strings.Replace(s, `"`, "\\\"", -1)
+}
+
+func EscapeError(err error) string {
+	s := fmt.Sprintf("%v", err)
+	return strings.Replace(s, `"`, "\\\"", -1)
+}
+
+func Hex_sha1(s string) string {
+	h := sha1.New()
+	io.WriteString(h, s)
+	return fmt.Sprintf("%x", h.Sum(nil))
+}
+
+//------------------------------------------------------------------------------------------------
+func TypeOf(v []interface{}) {
+	for i := range v {
+		fmt.Printf("Type of %d = %T\n", i, v[i])
+	}
+}
+
+// ===============================================================================================================================================================================================
+var isIntStringRe *regexp.Regexp
+var trueValues map[string]bool
+
+func init() {
+	isIntStringRe = regexp.MustCompile("[0-9][0-9]*")
+
+	trueValues = make(map[string]bool)
+	trueValues["t"] = true
+	trueValues["T"] = true
+	trueValues["yes"] = true
+	trueValues["Yes"] = true
+	trueValues["YES"] = true
+	trueValues["1"] = true
+	trueValues["true"] = true
+	trueValues["True"] = true
+	trueValues["TRUE"] = true
+	trueValues["on"] = true
+	trueValues["On"] = true
+	trueValues["ON"] = true
+}
+func IsIntString(s string) bool {
+	return isIntStringRe.MatchString(s)
+}
+
+func ParseBool(s string) (b bool) {
+	_, b = trueValues[s]
+	return
+	//if InArray(s, []string{"t", "T", "yes", "Yes", "YES", "1", "true", "True", "TRUE", "on", "On", "ON"}) {
+	//	return true
+	//}
+	//return false
+}
+
+//------------------------------------------------------------------------------------------------
+// func HasKeys ( v map[string]Validation ) bool {
+func HasKeys(v map[string]interface{}) bool {
+	for _, _ = range v {
+		return true
+	}
+	return false
+}
+
+// ====================================================================================================================================================================================
+// 1. Split path into array
+// 2. Use templates/substitution for
+//     	~ == HOME			$HOME from environment
+// This will search for [path] / file - [hostname] . ext, then...
+// This will search for [path] / file  . ext, then...
+// ====================================================================================================================================================================================
+
+var hasUserPat *regexp.Regexp
+var replUserPat *regexp.Regexp
+var homeDir string
+
+func init() {
+	ps := string(os.PathSeparator)
+	if ps != "/" {
+		ps = ps + ps
+	}
+
+	hasUserPat = regexp.MustCompile("~([a-zA-Z][^" + ps + "]*)" + ps)
+	replUserPat = regexp.MustCompile("(~[a-zA-Z][^" + ps + "]*)")
+
+	homeDir = os.Getenv("HOME")
+}
+
+func SubstitueUserInFilePath(s string, mdata map[string]string) (rs string, has bool) {
+	has = false
+	x := hasUserPat.FindStringSubmatch(s)
+	// fmt.Printf("x=%s\n", SVar(x))
+	rs = s
+	if len(x) > 1 {
+		has = true
+		p := x[1]
+		ud, err := user.Lookup(p)
+		if err != nil {
+			fmt.Printf("Error (13922): unable to lookup %s as a username, error=%s\n", p, err)
+		} else {
+			mdata["USER_"+ud.Username] = ud.HomeDir
+			rs = replUserPat.ReplaceAllLiteralString(rs, "%{USER_"+ud.Username+"%}")
+		}
+	} else if strings.HasPrefix(rs, "~") {
+		// fmt.Printf("Before last substitue rs [%s]\n", rs)
+		rs = strings.Replace(rs, "~", "%{HOME%}", 1)
+		// fmt.Printf("At bottom rs [%s]\n", rs)
+	}
+	return
+}
+
+func SubstitueUserInFilePathImmediate(s string) (rs string) {
+	x := hasUserPat.FindStringSubmatch(s)
+	// fmt.Printf("x=%s\n", SVar(x))
+	rs = s
+	if len(x) > 1 {
+		p := x[1]
+		ud, err := user.Lookup(p)
+		if err != nil {
+			fmt.Printf("Error (13922): unable to lookup %s as a username, error=%s\n", p, err)
+		} else {
+			rs = replUserPat.ReplaceAllLiteralString(rs, ud.HomeDir)
+		}
+	} else if strings.HasPrefix(rs, "~") {
+		// fmt.Printf("Before last substitue rs [%s]\n", rs)
+		rs = strings.Replace(rs, "~", homeDir, 1)
+		// fmt.Printf("At bottom rs [%s]\n", rs)
+	}
+	return
+}
+
+// 1. Match ~name
+// 2. get "name" out
+// 3. user.Lookup ( name )
+// 4. Replace ~name with %{USER_name%}, set mdata["USER_name"]
+// 5. DO .Qt
+
+func DepricatedSearchPath(rawFileName string, searchPath string) (fullFileName string, ok bool) {
+
+	hostname, err := os.Hostname()
+	if err != nil {
+		fmt.Printf("Error(10020): Unable to get the hostname (%v)\n", err)
+		os.Exit(1)
+	}
+
+	mdata := make(map[string]string, 30)
+	mdata["HostName"] = hostname
+	mdata["IS_WINDOWS"] = ""
+	ps := string(os.PathSeparator)
+	if ps != "/" {
+		mdata["IS_WINDOWS"] = ""
+	} else {
+		mdata["IS_WINDOWS"] = "ms"
+	}
+	mdata["HOME"] = os.Getenv("HOME")
+	mdata["FILENAMERAW"] = rawFileName
+	mdata["FILENAME"] = RmExt(rawFileName)
+	mdata["FILEEXT"] = filepath.Ext(rawFileName)
+	if ps != "/" {
+		ps = ps + ps
+	}
+	mdata["OS_SEP"] = ps
+
+	sp := strings.Split(searchPath, string(os.PathListSeparator))
+	ok = false
+	for _, p := range sp {
+		mdata["CUR_PATH"] = p
+
+		tmpl := "%{CUR_PATH%}%{OS_SEP%}%{FILENAME%}-%{HostName%}%{FILEEXT%}"
+		fullFileName = Qt(tmpl, mdata)
+		fullFileName, _ = SubstitueUserInFilePath(fullFileName, mdata)
+		fullFileName = Qt(fullFileName, mdata)
+		// fmt.Printf("1: %s\n", fullFileName)
+		if Exists(fullFileName) {
+			ok = true
+			return
+		}
+
+		tmpl = "%{CUR_PATH%}%{OS_SEP%}%{FILENAME%}%{FILEEXT%}"
+		fullFileName = Qt(tmpl, mdata)
+		fullFileName, _ = SubstitueUserInFilePath(fullFileName, mdata)
+		fullFileName = Qt(fullFileName, mdata)
+		// fmt.Printf("2: %s\n", fullFileName)
+		if Exists(fullFileName) {
+			ok = true
+			return
+		}
+
+		tmpl = "%{CUR_PATH%}%{OS_SEP%}%{FILENAMERAW%}"
+		fullFileName = Qt(tmpl, mdata)
+		fullFileName, _ = SubstitueUserInFilePath(fullFileName, mdata)
+		fullFileName = Qt(fullFileName, mdata)
+		// fmt.Printf("3: %s\n", fullFileName)
+		if Exists(fullFileName) {
+			ok = true
+			return
+		}
+
+	}
+	fullFileName = rawFileName
+	fullFileName, _ = SubstitueUserInFilePath(fullFileName, mdata)
+	fullFileName = Qt(fullFileName, mdata)
+	ok = Exists(fullFileName)
+	return
+}
+
+// Perform a search for files and return the full name for each file.
+//
+// rawFileName: sql-cfg.json
+// appName: "store"
+//
+func SearchPathApp(rawFileName string, appName string, searchPath string) (fullFileName string, ok bool) {
+
+	hostname, err := os.Hostname()
+	if err != nil {
+		fmt.Printf("Error(10020): Unable to get the hostname (%v)\n", err)
+		os.Exit(1)
+	}
+
+	mdata := make(map[string]string, 30)
+	mdata["HostName"] = hostname
+	mdata["AppName"] = appName
+	fmt.Printf("-- HostName [%s] AppName [%s] --\n", hostname, appName)
+	mdata["IS_WINDOWS"] = ""
+	ps := string(os.PathSeparator)
+	if ps != "/" {
+		mdata["IS_WINDOWS"] = ""
+	} else {
+		mdata["IS_WINDOWS"] = "ms"
+	}
+	mdata["HOME"] = os.Getenv("HOME")
+	mdata["FILENAMERAW"] = rawFileName
+	mdata["FILENAME"] = RmExt(rawFileName)
+	mdata["FILEEXT"] = filepath.Ext(rawFileName)
+	if ps != "/" {
+		ps = ps + ps
+	}
+	mdata["OS_SEP"] = ps
+
+	sp := strings.Split(searchPath, string(os.PathListSeparator))
+	ok = false
+	tmpl_arr := []string{
+		"%{CUR_PATH%}%{OS_SEP%}%{FILENAME%}-%{AppName%}-%{HostName%}%{FILEEXT%}",
+		"%{CUR_PATH%}%{OS_SEP%}%{FILENAME%}-%{AppName%}%{FILEEXT%}",
+		"%{CUR_PATH%}%{OS_SEP%}%{FILENAME%}-%{HostName%}%{FILEEXT%}",
+		"%{CUR_PATH%}%{OS_SEP%}%{FILENAME%}%{FILEEXT%}",
+		"%{CUR_PATH%}%{OS_SEP%}%{FILENAMERAW%}",
+	}
+	for _, p := range sp {
+		mdata["CUR_PATH"] = p
+
+		for _, tmpl := range tmpl_arr {
+			fullFileName = Qt(tmpl, mdata)
+			fullFileName, _ = SubstitueUserInFilePath(fullFileName, mdata)
+			fullFileName = Qt(fullFileName, mdata)
+			fmt.Printf("-- Test to see if -->>%s<<-- exits -- \n", fullFileName)
+			if Exists(fullFileName) {
+				ok = true
+				return
+			}
+		}
+
+	}
+	fullFileName = rawFileName
+	fullFileName, _ = SubstitueUserInFilePath(fullFileName, mdata)
+	fullFileName = Qt(fullFileName, mdata)
+	ok = Exists(fullFileName)
+	return
+}
+
+var db_uriToString = false
+
+func SizlibSetDebugFlag(s string, v bool) {
+	switch s {
+	case "uriToString":
+		db_uriToString = v
+	}
+}
+
+func FindFiles(pth string, ignoreDirs []string) (rv []string) {
+	// fmt.Printf("pth=->%s<-, checking vs %s, %s\n", pth, SVar(ignoreDirs), godebug.LF())
+	if InArray(pth, ignoreDirs) {
+		return
+	}
+	fns, dirs := GetFilenames(pth)
+	fns = FilterArray("^sql-cfg.*\\.json$", fns)
+	for i, v := range fns {
+		fns[i] = pth + "/" + v
+	}
+	rv = append(rv, fns...)
+	for _, v := range dirs {
+		trv := FindFiles(pth+"/"+v, ignoreDirs)
+		rv = append(rv, trv...)
+	}
+	return
+}
+
+func FindDirsWithSQLCfg(pth string, ignoreDirs []string) (rv []string) {
+	fns, dirs := GetFilenames(pth)
+	_ = dirs
+	fns = FilterArray("^sql-cfg.*\\.json$", fns)
+	for i, v := range fns {
+		fns[i] = pth + "/" + v
+	}
+	fmt.Printf("fns=%s\n", fns)
+	for _, vv := range fns {
+		ww := Dirname(vv)
+		if InArray(ww, ignoreDirs) {
+		} else if !InArray(ww, rv) {
+			rv = append(rv, ww)
+		}
+	}
+	return
+
+	//	rv = append(rv, fns...)
+	//	for _, v := range dirs {
+	//		trv := FindFiles(pth+"/"+v, ignoreDirs)
+	//		for _, w := range trv {
+	//			ww := Dirname(w)
+	//			if !InArray(ww, rv) {
+	//				rv = append(rv, ww)
+	//			}
+	//		}
+	//	}
+	//	return
+
+}
+
+// Return the directory part of a file name
+func Dirname(fn string) (bn string) {
+	fn = filepath.Clean(fn)
+	i := strings.LastIndex(fn, "/")
+	// fmt.Printf("i=%d\n", i)
+	bn = fn
+	if i > 0 {
+		bn = fn[0:i]
+	}
+	fmt.Printf("Dirname Input[%s] Output[%s], %s\n", fn, bn, godebug.LF())
+	return
+}
+
+func SearchPathAppModule(rawFileName string, appName string, searchPath []string) (fullFileName []string, ok bool) {
+
+	hostname, err := os.Hostname()
+	if err != nil {
+		fmt.Printf("Error(10020): Unable to get the hostname (%v)\n", err)
+		os.Exit(1)
+	}
+
+	mdata := make(map[string]string, 30)
+	mdata["HostName"] = hostname
+	mdata["AppName"] = appName
+	mdata["IS_WINDOWS"] = ""
+	ps := string(os.PathSeparator)
+	if ps != "/" {
+		mdata["IS_WINDOWS"] = ""
+	} else {
+		mdata["IS_WINDOWS"] = "ms"
+	}
+	mdata["HOME"] = os.Getenv("HOME")
+	mdata["FILENAMERAW"] = rawFileName
+	mdata["FILENAME"] = RmExt(rawFileName)
+	mdata["FILEEXT"] = filepath.Ext(rawFileName)
+	if ps != "/" {
+		ps = ps + ps
+	}
+	mdata["OS_SEP"] = ps
+
+	ok = false
+	tmpl_arr := []string{
+		"%{CUR_PATH%}%{OS_SEP%}%{FILENAME%}-%{AppName%}-%{ModuleName%}-%{HostName%}%{FILEEXT%}",
+		"%{CUR_PATH%}%{OS_SEP%}%{FILENAME%}-%{AppName%}-%{ModuleName%}%{FILEEXT%}",
+		"%{CUR_PATH%}%{OS_SEP%}%{FILENAME%}-%{ModuleName%}-%{HostName%}%{FILEEXT%}",
+		"%{CUR_PATH%}%{OS_SEP%}%{FILENAME%}-%{ModuleName%}%{FILEEXT%}",
+		"%{CUR_PATH%}%{OS_SEP%}%{FILENAME%}-%{AppName%}-%{HostName%}%{FILEEXT%}",
+		"%{CUR_PATH%}%{OS_SEP%}%{FILENAME%}-%{AppName%}%{FILEEXT%}",
+		"%{CUR_PATH%}%{OS_SEP%}%{FILENAME%}-%{HostName%}%{FILEEXT%}",
+		"%{CUR_PATH%}%{OS_SEP%}%{FILENAME%}%{FILEEXT%}",
+		"%{CUR_PATH%}%{OS_SEP%}%{FILENAMERAW%}",
+	}
+	for _, p := range searchPath {
+		mdata["CUR_PATH"] = p
+		mdata["ModuleName"] = Basename(p)
+		fmt.Printf("ModuleName: ->%s<- for %s, %s\n", Basename(p), p, godebug.LF())
+
+		for _, tmpl := range tmpl_arr {
+			aName := Qt(tmpl, mdata)
+			aName, _ = SubstitueUserInFilePath(aName, mdata)
+			aName = Qt(aName, mdata)
+			fmt.Printf("aName: ->%s<- Checking to see if file exists, %s\n", aName, godebug.LF())
+			if Exists(aName) {
+				if !InArray(aName, fullFileName) {
+					fullFileName = append(fullFileName, aName)
+					ok = true
+				}
+			}
+		}
+
+	}
+	return
+}
+
+// see: mdata["url"] = url.QueryEscape(xurl)
+//func UrlEncoded(str string) string {
+//	u, err := url.Parse(str)
+//	if err != nil {
+//		return str
+//	}
+//	return u.String()
+//}
+
+// xyzzy - should use umask, or 0640 for Winderz
+
+var invalidMode = errors.New("Invalid Mode")
+
+func Fopen(fn string, mode string) (file *os.File, err error) {
+	file = nil
+	if mode == "r" {
+		file, err = os.Open(fn) // For read access.
+	} else if mode == "w" {
+		file, err = os.OpenFile(fn, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0666)
+	} else if mode == "a" {
+		file, err = os.OpenFile(fn, os.O_RDWR|os.O_APPEND, 0660)
+		if err != nil {
+			file, err = os.OpenFile(fn, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0666)
+		}
+	} else {
+		err = invalidMode
+	}
+	return
+}
+
+func DbValueFromRow(rvdata []map[string]interface{}, row int, col string, def string) (rv string) {
+	x_col, x_ok := rvdata[row][col] //
+	rv = def
+	if x_ok && x_col != nil {
+		// rv = rvdata[row][col].(string)
+		rv = x_col.(string)
+	}
+	return
+}
+func DbValueIsNull(rvdata []map[string]interface{}, row int, col string) (rv bool) {
+	x_col, x_ok := rvdata[row][col] //
+	rv = true
+	if x_ok && x_col != nil {
+		// rv = rvdata[row][col].(string)
+		rv = false
+	}
+	return
+}
+
+// ===============================================================================================================================================
+// get client ip address from request
+//  ip,_,_ := net.SplitHostPort(r.RemoteAddr)
+//
+func GetIpFromRemoteAddr(RemoteAddr string) (rv string) {
+	rv, _, _ = net.SplitHostPort(RemoteAddr)
+	//n := strings.LastIndex(RemoteAddr, ":")
+	//rv = RemoteAddr
+	//if n > 0 && n < len(RemoteAddr) {
+	//	rv = RemoteAddr[:n]
+	//}
+	return
+}
+
+// ===============================================================================================================================================
+var ln *regexp.Regexp
+var fi *regexp.Regexp
+var cm *regexp.Regexp
+
+func init() {
+	ln = regexp.MustCompile("__LINE__")
+	fi = regexp.MustCompile("__FILE__")
+	cm = regexp.MustCompile("////.*$")
+}
+
+func ReadJSONDataWithComments(path string) (file []byte, err error) {
+	file, err = ioutil.ReadFile(path)
+	if err != nil {
+		// fmt.Printf("Error(10014): Error Reading/Opening %v, %s, Config File:%s\n", err, godebug.LF(), path)
+		// fmt.Fprintf(os.Stderr, "%sError(10014): Error Reading/Opening %v, %s, Config File:%s%s\n", MiscLib.ColorRed, err, godebug.LF(), path, MiscLib.ColorReset)
+		return
+	}
+
+	data := strings.Replace(string(file), "\t", " ", -1)
+	lines := strings.Split(data, "\n")
+	//ln := regexp.MustCompile("__LINE__")
+	//fi := regexp.MustCompile("__FILE__")
+	//cm := regexp.MustCompile("//.*$")
+	for lineNo, aLine := range lines {
+		aLine = ln.ReplaceAllString(aLine, fmt.Sprintf("%d", lineNo+1))
+		aLine = fi.ReplaceAllString(aLine, path)
+		aLine = cm.ReplaceAllString(aLine, "")
+		lines[lineNo] = aLine
+	}
+	file = []byte(strings.Join(lines, "\n"))
+
+	// fmt.Printf("Results >%s<\n", file)
+
+	return file, nil
+}
+
+/* vim: set noai ts=4 sw=4: */
