@@ -139,7 +139,8 @@ func main() {
 						fmt.Printf("Read From %s\n", rdr.FileToRead)
 					}
 					// do read in infinite loop
-					fp, err := sizlib.Fopen(rdr.FileToRead, "r")
+					// fp, err := sizlib.Fopen(rdr.FileToRead, "r")
+					fp, err := os.OpenFile(rdr.FileToRead, os.O_RDWR, os.ModeNamedPipe)
 					if err != nil {
 						fmt.Fprintf(os.Stderr, "Unable to open %s for input, error=%s\n", rdr.FileToRead, err)
 					}
@@ -157,9 +158,7 @@ func main() {
 								message <- MoveData{Data: string(data)}
 							}
 							if err != nil || len(data) == 0 { // TODO - should check for error of EOF, if EOF that's ok, else report error
-								// fmt.Printf("Sleep, err=%s\n", err)
-								time.Sleep(200 * time.Millisecond)
-								break
+								fmt.Printf("Error: err=%s\n", err)
 							}
 						}
 					}
